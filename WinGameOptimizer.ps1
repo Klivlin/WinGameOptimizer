@@ -6,7 +6,9 @@
     Применяет только документированные, обратимые настройки Windows:
     план питания, планирование GPU, MMCSS/приоритеты процессов, сетевые тайминги,
     фоновые службы. Перед любым изменением делает бэкап затронутых веток реестра
-    и текущей схемы питания. Отключение антивируса/защитника НЕ выполняется.
+    и текущей схемы питания. Отключение Microsoft Defender доступно только как
+    отдельная опция вкладки «Advanced (риск)»: выкл. по умолчанию, с подтверждением и
+    кнопкой обратного включения.
 
 .NOTES
     Запускать от имени администратора. Windows 10/11 x64.
@@ -85,7 +87,8 @@ $RegistryKeysTouched = @(
     "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games",
     "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters",
     "HKCU\Control Panel\Desktop",
-    "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"
+    "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management",
+    "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl"
 )
 
 function Backup-CurrentState {
@@ -169,7 +172,32 @@ function Restore-FromBackup {
 # 2. Блоки оптимизаций
 # ---------------------------------------------------------------------------
 
+function Test-IsX3D {
+    try {
+        $name = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
+        return ($name -match "X3D")
+    } catch { return $false }
+}
+
+function Test-IsDualCcdX3D {
+    # Двухчиплетные X3D (7900X3D/7950X3D/9900X3D/9950X3D) зависят от драйвера 3D V-Cache,
+    # который использует Xbox Game Bar для определения игр и распределения по CCD.
+    try {
+        $name = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
+        return ($name -match "(79|99)[05]0X3D")
+    } catch { return $false }
+}
+
 function Opt-UltimatePower {
+    if (Test-IsX3D) {
+        # AMD 3D V-Cache driver управляет распределением игр по CCD через штатный
+        # Balanced; Ultimate Performance ломает эту логику и снижает FPS.
+        Write-Log "Обнаружен процессор X3D: вместо Ultimate Performance активирован план «Сбалансированная» (рекомендация AMD)." "WARN"
+        powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e
+        powercfg /change monitor-timeout-ac 0
+        powercfg /change standby-timeout-ac 0
+        return
+    }
     Write-Log "Включение плана питания Ultimate Performance..."
     $guidTemplate = "e9a42b02-d5df-448d-aa00-03f14749eb61"
     $out = powercfg /duplicatescheme $guidTemplate 2>&1
@@ -199,6 +227,10 @@ function Opt-DisableUsbSuspend {
 }
 
 function Opt-DisableCoreParking {
+    if (Test-IsX3D) {
+        Write-Log "Обнаружен процессор X3D: отключение core parking пропущено (драйвер 3D V-Cache использует парковку ядер второго CCD)." "WARN"
+        return
+    }
     Write-Log "Отключение core parking (CPU min cores = 100%)..."
     powercfg /setacvalueindex scheme_current 54533251-82be-4824-96c1-47b60b740d00 0cc5b647-c1df-4637-891a-dec35c318583 100
     powercfg /setactive scheme_current
@@ -211,6 +243,10 @@ function Opt-HAGS {
 }
 
 function Opt-DisableGameDVR {
+    if (Test-IsDualCcdX3D) {
+        Write-Log "Обнаружен двухчиплетный X3D: Game Bar оставлен включённым (нужен драйверу 3D V-Cache для выбора CCD). Отключение пропущено." "WARN"
+        return
+    }
     Write-Log "Отключение Game DVR / Xbox Game Bar overlay..."
     Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0
     Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehaviorMode" -Value 2
@@ -231,6 +267,12 @@ function Opt-MMCSSGamesProfile {
 function Opt-NetworkThrottling {
     Write-Log "Отключение Network Throttling Index (снижение задержки для сети)..."
     Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xffffffff
+}
+
+function Opt-PrioritySeparation {
+    # 0x12 (18): фиксированный длинный квант, приоритет фону не снижается так сильно (рекомендация из разборов планировщика).
+    Write-Log "Win32PrioritySeparation = 18 (фиксированный длинный квант)..."
+    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 18
 }
 
 function Opt-DisableNagle {
@@ -267,8 +309,7 @@ $BackgroundServicesList = @(
     "MapsBroker",         # Downloaded Maps Manager
     "lfsvc",              # Geolocation Service
     "RetailDemo",         # Retail Demo Service
-    "WerSvc",             # Windows Error Reporting — можно отключать на время игры
-    "PcaSvc"              # Program Compatibility Assistant
+    "WerSvc"              # Windows Error Reporting — можно отключать на время игры
 )
 
 function Opt-BackgroundServices {
@@ -323,6 +364,56 @@ function Opt-DisableMitigations {
     Write-Log "Требуется перезагрузка. Это снижает защиту от уязвимостей класса Spectre/Meltdown." "WARN"
 }
 
+$DefenderPolicyPath   = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"
+$DefenderRtpPolicyPath = "$DefenderPolicyPath\Real-Time Protection"
+
+function Opt-DisableDefender {
+    Write-Log "ВНИМАНИЕ: отключение Microsoft Defender (защита в реальном времени)..." "WARN"
+    try {
+        $st = Get-MpComputerStatus -ErrorAction Stop
+        if ($st.IsTamperProtected) {
+            Write-Log "Включена «Защита от подделки» (Tamper Protection): Windows блокирует отключение Defender. Выключите её вручную: Безопасность Windows → Защита от вирусов и угроз → Параметры → Защита от подделки — и повторите." "ERROR"
+            return
+        }
+    } catch {
+        Write-Log "Не удалось прочитать статус Defender (возможно, стоит сторонний антивирус): $($_.Exception.Message)" "WARN"
+    }
+    Backup-RegistryPath -Path $DefenderPolicyPath -Label "DefenderPolicy" | Out-Null
+    try {
+        Set-MpPreference -DisableRealtimeMonitoring $true -DisableBehaviorMonitoring $true `
+            -DisableIOAVProtection $true -DisableScriptScanning $true -DisableBlockAtFirstSeen $true `
+            -MAPSReporting 0 -SubmitSamplesConsent 2 -ErrorAction Stop
+        Write-Log "Защита в реальном времени, поведенческий анализ, проверка скриптов и облачная защита отключены."
+    } catch {
+        Write-Log "Set-MpPreference не применён: $($_.Exception.Message)" "ERROR"
+    }
+    Set-RegistryValue -Path $DefenderPolicyPath -Name "DisableAntiSpyware" -Value 1
+    Set-RegistryValue -Path $DefenderRtpPolicyPath -Name "DisableRealtimeMonitoring" -Value 1
+    Set-RegistryValue -Path $DefenderRtpPolicyPath -Name "DisableBehaviorMonitoring" -Value 1
+    Set-RegistryValue -Path $DefenderRtpPolicyPath -Name "DisableOnAccessProtection" -Value 1
+    Set-RegistryValue -Path $DefenderRtpPolicyPath -Name "DisableScanOnRealtimeEnable" -Value 1
+    Write-Log "Defender отключён политиками. Требуется перезагрузка. Файлы проверяться НЕ будут — используйте кнопку «Включить Defender обратно», когда он не нужен." "WARN"
+}
+
+function Restore-Defender {
+    Write-Log "Включение Microsoft Defender обратно..."
+    foreach ($n in @("DisableAntiSpyware")) {
+        Remove-ItemProperty -Path $DefenderPolicyPath -Name $n -ErrorAction SilentlyContinue
+    }
+    foreach ($n in @("DisableRealtimeMonitoring","DisableBehaviorMonitoring","DisableOnAccessProtection","DisableScanOnRealtimeEnable")) {
+        Remove-ItemProperty -Path $DefenderRtpPolicyPath -Name $n -ErrorAction SilentlyContinue
+    }
+    try {
+        Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false `
+            -DisableIOAVProtection $false -DisableScriptScanning $false -DisableBlockAtFirstSeen $false `
+            -MAPSReporting 2 -SubmitSamplesConsent 1 -ErrorAction Stop
+        Write-Log "Параметры Defender возвращены к значениям по умолчанию."
+    } catch {
+        Write-Log "Set-MpPreference не применён: $($_.Exception.Message)" "WARN"
+    }
+    Write-Log "Политики Defender удалены. Рекомендуется перезагрузка и включение «Защиты от подделки» в Безопасности Windows." "WARN"
+}
+
 function Opt-DisableNicPowerSaving {
     Write-Log "Отключение энергосбережения сетевых адаптеров (снижает micro-лаги/задержку)..."
     try {
@@ -354,7 +445,6 @@ function Clear-TempAndCache {
     $paths = @(
         "$env:TEMP\*",
         "$env:WINDIR\Temp\*",
-        "$env:WINDIR\Prefetch\*",
         "$env:LOCALAPPDATA\Microsoft\Windows\INetCache\*",
         "$env:LOCALAPPDATA\CrashDumps\*"
     )
@@ -705,16 +795,24 @@ $tabPower = New-OptTab "Питание"
 Add-OptCheckbox $tabPower "UltimatePower" "Включить план питания Ultimate Performance" 20
 Add-OptCheckbox $tabPower "UsbSuspend"    "Отключить USB selective suspend" 55
 Add-OptCheckbox $tabPower "CoreParking"   "Отключить core parking (ядра CPU всегда активны)" 90
+if (Test-IsX3D) {
+    $lblX3d = New-Object System.Windows.Forms.Label
+    $lblX3d.Text = "Обнаружен X3D: Ultimate Performance заменяется на «Сбалансированная», core parking не трогается."
+    $lblX3d.Location = New-Object System.Drawing.Point(10, 130)
+    $lblX3d.Size = New-Object System.Drawing.Size(560, 40)
+    $lblX3d.ForeColor = [System.Drawing.Color]::DarkOrange
+    $tabPower.Controls.Add($lblX3d)
+}
 
 $tabGpu = New-OptTab "GPU / Дисплей"
 Add-OptCheckbox $tabGpu "HAGS"       "Hardware-Accelerated GPU Scheduling" 20
 Add-OptCheckbox $tabGpu "GameDVR"    "Отключить Game DVR / Xbox Game Bar overlay" 55
-Add-OptCheckbox $tabGpu "MMCSS"      "Приоритет GPU/CPU для игр (MMCSS 'Games')" 90
+Add-OptCheckbox $tabGpu "MMCSS"      "Приоритет GPU/CPU для игр (MMCSS 'Games') — эффект спорный, тестируйте" 90 $false
 Add-OptCheckbox $tabGpu "VisualFx"   "Визуальные эффекты: 'Лучшее быстродействие'" 125 $false
 
 $tabNet = New-OptTab "Сеть"
 Add-OptCheckbox $tabNet "NetThrottle" "Отключить Network Throttling Index" 20
-Add-OptCheckbox $tabNet "Nagle"       "Отключить алгоритм Нагла (TCPNoDelay)" 55
+Add-OptCheckbox $tabNet "Nagle"       "Отключить алгоритм Нагла (TCPNoDelay) — только TCP, большинство игр на UDP" 55 $false
 Add-OptCheckbox $tabNet "DnsWinsock"  "Flush DNS + сброс Winsock (может сбросить сетевые настройки)" 90 $false
 
 $tabSys = New-OptTab "Система"
@@ -724,6 +822,7 @@ Add-OptCheckbox $tabSys "BgApps"       "Отключить фоновые UWP-п
 Add-OptCheckbox $tabSys "NicPower"     "Отключить энергосбережение сетевой карты" 125
 Add-OptCheckbox $tabSys "Hibernation"  "Отключить гибернацию (освободить место на диске)" 160 $false
 Add-OptCheckbox $tabSys "ClearTemp"    "Очистить temp/кэш/корзину перед применением" 195
+Add-OptCheckbox $tabSys "PrioSep"      "Win32PrioritySeparation = 18 (фиксированный длинный квант) — тестируйте" 230 $false
 
 $tabAdv = New-OptTab "Advanced (риск)"
 $warnLabel = New-Object System.Windows.Forms.Label
@@ -733,6 +832,29 @@ $warnLabel.Location = New-Object System.Drawing.Point(15, 15)
 $warnLabel.Size = New-Object System.Drawing.Size(680, 20)
 $tabAdv.Controls.Add($warnLabel)
 Add-OptCheckbox $tabAdv "Mitigations" "Отключить Spectre/Meltdown mitigations (снижает защиту CPU)" 45 $false
+Add-OptCheckbox $tabAdv "Defender"    "Отключить Microsoft Defender (защита в реальном времени) — см. риски ниже" 80 $false
+
+$lblDefRisk = New-Object System.Windows.Forms.Label
+$lblDefRisk.Text = "Риски отключения Defender:`r`n" +
+ "• ПК остаётся без антивируса: вирусы, майнеры, стилеры, шифровальщики не блокируются;`r`n" +
+ "• читы, моды и «кряки» из интернета часто несут вредоносный код — это главный путь заражения у геймеров;`r`n" +
+ "• теряется защита от вредоносных скриптов, макросов и поддельных установщиков;`r`n" +
+ "• сначала нужно вручную выключить «Защиту от подделки», иначе Windows всё вернёт;`r`n" +
+ "• обновления Windows могут включить Defender обратно; Центр безопасности будет показывать предупреждения;`r`n" +
+ "• часть античитов и приложений Microsoft Store могут сообщать о небезопасной конфигурации;`r`n" +
+ "• прирост FPS обычно небольшой (единицы %) — выигрыш в основном в меньших фоновых проверках.`r`n" +
+ "Полное удаление Defender не выполняется: на нём завязаны другие компоненты Windows."
+$lblDefRisk.ForeColor = [System.Drawing.Color]::DarkRed
+$lblDefRisk.Location = New-Object System.Drawing.Point(15, 110)
+$lblDefRisk.Size = New-Object System.Drawing.Size(680, 150)
+$tabAdv.Controls.Add($lblDefRisk)
+
+$btnRestoreDefender = New-Object System.Windows.Forms.Button
+$btnRestoreDefender.Text = "Включить Defender обратно"
+$btnRestoreDefender.Location = New-Object System.Drawing.Point(15, 270)
+$btnRestoreDefender.Size = New-Object System.Drawing.Size(220, 30)
+$btnRestoreDefender.Add_Click({ Restore-Defender })
+$tabAdv.Controls.Add($btnRestoreDefender)
 
 $tabStartup = New-OptTab "Автозагрузка"
 $lblStartup = New-Object System.Windows.Forms.Label
@@ -952,6 +1074,7 @@ $btnApply.Add_Click({
     if ($checkboxes["BgApps"].Checked)        { Opt-DisableBackgroundApps }
     if ($checkboxes["NicPower"].Checked)      { Opt-DisableNicPowerSaving }
     if ($checkboxes["Hibernation"].Checked)   { Opt-DisableHibernation }
+    if ($checkboxes["PrioSep"].Checked)       { Opt-PrioritySeparation }
     if ($checkboxes["MouseAccel"].Checked)    { Opt-DisableMouseAcceleration }
     if ($checkboxes["InputQueue"].Checked)    { Opt-ReduceInputBuffering }
     if ($checkboxes["HidPower"].Checked)      { Opt-DisableHidPowerSaving }
@@ -968,6 +1091,18 @@ $btnApply.Add_Click({
             "Подтверждение", "YesNo", "Warning")
         if ($confirm -eq "Yes") { Opt-EnableMsiModeForInputDevices }
         else { Write-Log "MSI mode пропущен пользователем." }
+    }
+    if ($checkboxes["Defender"].Checked) {
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Microsoft Defender будет отключён, ПК останется БЕЗ антивирусной защиты.`r`n`r`n" +
+            "Риски: заражение вирусами, майнерами и стилерами (особенно через читы, моды и кряки), " +
+            "отсутствие защиты от шифровальщиков и вредоносных скриптов, предупреждения Центра безопасности, " +
+            "возможное самопроизвольное включение после обновлений Windows.`r`n`r`n" +
+            "Перед этим должна быть вручную выключена «Защита от подделки». Включить обратно можно кнопкой на вкладке Advanced.`r`n`r`n" +
+            "Вы понимаете риски и хотите продолжить?",
+            "Отключение Defender", "YesNo", "Warning")
+        if ($confirm -eq "Yes") { Opt-DisableDefender }
+        else { Write-Log "Отключение Defender пропущено пользователем." }
     }
     if ($checkboxes["Mitigations"].Checked) {
         $confirm = [System.Windows.Forms.MessageBox]::Show(

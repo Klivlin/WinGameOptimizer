@@ -22,8 +22,8 @@ The script requests elevation (UAC) automatically if not already running as admi
 
 ## Что НЕ делает скрипт / What this script will NOT do
 
-- Не отключает антивирус/Защитник Windows (Defender) и брандмауэр.
-  Does not disable antivirus/Windows Defender or the firewall.
+- По умолчанию не трогает антивирус/Защитник Windows (Defender) и брандмауэр. Отключение Defender — отдельная опция вкладки «Advanced (риск)» с подтверждением.
+  Does not touch antivirus/Defender or the firewall by default. Disabling Defender is an opt-in option on the Advanced tab with confirmation.
 - Не отключает Windows Update полностью (только фоновые задачи телеметрии/CEIP, не сам механизм обновлений безопасности).
   Does not fully disable Windows Update (only background telemetry/CEIP scheduled tasks, not the security-update mechanism itself).
 - Не удаляет античит-процессы или системные компоненты, необходимые для работы игр (vgc.exe, EasyAntiCheat и т.п. не трогаются).
@@ -40,30 +40,37 @@ The script requests elevation (UAC) automatically if not already running as admi
 | Отключить USB selective suspend | Disable USB selective suspend | USB-устройства (мышь/геймпад) не "засыпают", снижает случайные микро-лаги |
 | Отключить core parking | Disable core parking | Все логические ядра CPU остаются активными, снижает задержку пробуждения ядра при нагрузке |
 
+> **Процессоры AMD X3D / X3D CPUs:** скрипт определяет X3D автоматически. Вместо Ultimate Performance включается «Сбалансированная» (драйвер 3D V-Cache сам выбирает CCD для игры), а отключение core parking пропускается.
+> The script auto-detects X3D CPUs: Balanced plan is used instead of Ultimate Performance and core-parking tweak is skipped.
+
 ### 2. Вкладка «GPU / Дисплей» / GPU & Display tab
+> **Двухчиплетные X3D (7900X3D / 7950X3D / 9900X3D / 9950X3D):** отключение Game Bar пропускается — драйвер 3D V-Cache использует его для распознавания игр и выбора CCD.
+> On dual-CCD X3D CPUs the Game Bar tweak is skipped: the 3D V-Cache driver relies on it to detect games and pick the CCD.
+
 | RU | EN | Эффект |
 |---|---|---|
 | Hardware-Accelerated GPU Scheduling (HAGS) | same | Планирование GPU на уровне драйвера вместо CPU-диспетчера, снижает задержку рендера на поддерживаемых GPU |
 | Отключить Game DVR / Xbox Game Bar overlay | Disable Game DVR / Xbox Game Bar overlay | Убирает фоновую запись/оверлей, разгружает GPU/CPU во время игры |
-| Приоритет GPU/CPU для игр (MMCSS "Games") | Game-priority MMCSS profile | Повышает multimedia-приоритет игровых процессов в планировщике Windows |
+| Приоритет GPU/CPU для игр (MMCSS "Games") (выкл. по умолчанию) | Game-priority MMCSS profile (off by default) | MMCSS в основном влияет на аудиопотоки; для игр эффект спорный — включайте и сравнивайте |
 | Визуальные эффекты "Лучшее быстродействие" (выкл. по умолчанию) | "Best performance" visual effects (off by default) | Отключает анимации Windows, немного освобождает CPU/GPU |
 
 ### 3. Вкладка «Сеть» / Network tab
 | RU | EN | Эффект |
 |---|---|---|
 | Отключить Network Throttling Index | Disable Network Throttling Index | Снимает искусственное ограничение пропускной способности мультимедиа-трафика в MMCSS |
-| Отключить алгоритм Нагла (TCPNoDelay) | Disable Nagle's algorithm (TCPNoDelay) | Снижает задержку отправки мелких TCP-пакетов — важно для сетевого кода большинства игр |
+| Отключить алгоритм Нагла (TCPNoDelay) (выкл. по умолчанию) | Disable Nagle's algorithm (TCPNoDelay) (off by default) | Влияет только на TCP; большинство шутеров работает по UDP, поэтому польза мала |
 | Flush DNS + сброс Winsock (выкл. по умолчанию) | Flush DNS + reset Winsock (off by default) | Устраняет повреждённые сетевые настройки/DNS-кэш, может помочь при высоком пинге |
 
 ### 4. Вкладка «Система» / System tab
 | RU | EN | Эффект |
 |---|---|---|
-| Остановить фоновые службы (SysMain, WSearch, DiagTrack, dmwappushservice, MapsBroker, lfsvc, RetailDemo, WerSvc, PcaSvc) | Stop background services (same list) | Снижает фоновую нагрузку на CPU/диск от индексации, телеметрии, геолокации и т.д. |
+| Остановить фоновые службы (SysMain, WSearch, DiagTrack, dmwappushservice, MapsBroker, lfsvc, RetailDemo, WerSvc) | Stop background services (same list) | Снижает фоновую нагрузку на CPU/диск от индексации, телеметрии, геолокации и т.д. |
 | Отключить фоновые задачи планировщика (телеметрия, CEIP, карты, отзывы) | Disable background scheduled tasks (telemetry, CEIP, maps, feedback) | Убирает периодические фоновые "просыпания" системы |
 | Отключить фоновые UWP-приложения | Disable background UWP apps | UWP-приложения из Store не работают в фоне и не тратят ресурсы |
 | Отключить энергосбережение сетевой карты | Disable NIC power saving | NIC не уходит в低power-режим, снижает сетевые микро-лаги/джиттер |
 | Отключить гибернацию (выкл. по умолчанию) | Disable hibernation (off by default) | Освобождает место на диске (убирает hiberfil.sys) |
-| Очистить temp/кэш/корзину | Clean temp/cache/recycle bin | Освобождает место, убирает мусорные файлы, которые может сканировать антивирус/индексатор |
+| Очистить temp/кэш/корзину | Clean temp/cache/recycle bin | Освобождает место, убирает мусорные файлы, которые может сканировать антивирус/индексатор (Prefetch не трогается) |
+| Win32PrioritySeparation = 18 (выкл. по умолчанию) | same (off by default) | Фиксированный длинный квант планировщика: фоновый поток реже вытесняет игровой. Эффект зависит от системы — тестируйте |
 
 ### 5. Вкладка «Мышь / Инпут-лаг» / Mouse & Input-lag tab
 | RU | EN | Эффект |
@@ -81,7 +88,17 @@ Before changing IRQ affinity / MSI mode, the relevant device registry branch is 
 ### 6. Вкладка «Advanced (риск)» / Advanced (risk) tab
 | RU | EN | Эффект |
 |---|---|---|
-| Отключить Spectre/Meltdown mitigations (выкл. по умолчанию, с отдельным подтверждением) | Disable Spectre/Meltdown mitigations (off by default, separate confirmation) | Заметный прирост в CPU-bound сценариях, но снижает защиту процессора от атак по сторонним каналам |
+| | Отключить Spectre/Meltdown mitigations (выкл. по умолчанию, с отдельным подтверждением) | Disable Spectre/Meltdown mitigations (off by default, separate confirmation) | Заметный прирост в CPU-bound сценариях, но снижает защиту процессора от атак по сторонним каналам |
+| Отключить Microsoft Defender (выкл. по умолчанию, с отдельным подтверждением и кнопкой «Включить обратно») | Disable Microsoft Defender (off by default, confirmation + one-click re-enable) | Убирает фоновые проверки файлов в реальном времени; прирост обычно небольшой, риски серьёзные — см. ниже |
+
+#### Риски отключения Defender / Defender risks
+- ПК остаётся **без антивируса**: не блокируются вирусы, майнеры, стилеры паролей/аккаунтов, шифровальщики. / The PC has **no antivirus** protection.
+- Главный путь заражения у геймеров — читы, моды, «кряки» и сторонние установщики. / Cheats, mods and cracks are the main infection vector.
+- Теряется защита от вредоносных скриптов, макросов и подменённых загрузок. / No protection from malicious scripts and tampered downloads.
+- Нужно заранее вручную выключить «Защиту от подделки» (Tamper Protection), иначе Windows откатит изменения; скрипт сам её не отключает и сообщит об этом. / Tamper Protection must be turned off manually first.
+- Обновления Windows могут включить Defender обратно; Центр безопасности будет показывать предупреждения; часть античитов/приложений могут сообщать о небезопасной конфигурации. / Windows updates may re-enable it; Security Center will warn.
+- Полное удаление Defender **не выполняется**: на нём завязаны другие компоненты Windows. Используется отключение политиками и `Set-MpPreference`, оно обратимо кнопкой «Включить Defender обратно» (удаляет политики и возвращает параметры по умолчанию). / Defender is disabled, not uninstalled, and can be re-enabled with one click.
+- Рекомендация: отключайте только при наличии другого антивируса или на ПК, который используется исключительно для игр, и не запускайте непроверенные файлы. / Disable only if you have another AV or a games-only PC.
 
 ### 7. Вкладка «Автозагрузка» / Startup tab
 Показывает реальный список автозапуска (реестр `Run` HKCU/HKLM + папка Startup). Выбранные пункты **отключаются** (перемещаются в бэкап, не удаляются) — кнопка восстанавливает всё обратно.
@@ -100,6 +117,21 @@ Windows has no built-in rollback for app removal — removed package names are l
 Выбор игры (Valorant / CS2 / CS:GO / Dota 2) и запуск фонового мониторинга процесса: при обнаружении игрового .exe ему автоматически выставляется приоритет `High` и affinity на все логические ядра. Анти-чит процессы не трогаются.
 
 Select a game (Valorant / CS2 / CS:GO / Dota 2) and start a background process monitor: when the game's .exe is detected, it automatically gets `High` priority and affinity across all logical cores. Anti-cheat processes are left untouched.
+
+---
+
+## Чего оптимизатор намеренно НЕ делает / What it deliberately does not do
+
+По итогам сравнения разборов по оптимизации Windows (сходятся не все, спорные пункты вынесены в «выкл. по умолчанию»):
+
+- не удаляет Windows Defender (ломает связанные компоненты); отключение — только отдельной опцией с рисками и обратным включением;
+- не отключает HPET и не лезет в `bcdedit` таймеры;
+- не меняет TCP autotuning и не применяет «TCP Optimizer»-твики (игры работают по UDP);
+- не чистит standby-список и не ставит «очистители памяти» (рост hard page faults и статтеров);
+- не раскидывает процессы по ядрам и не меняет Ideal Processor потоков (только affinity прерываний устройств ввода, по желанию);
+- не отключает устройства в диспетчере без разбора.
+
+Спорные темы (тестируйте на своей системе): HAGS (по умолчанию включается), Игровой режим Windows (не трогается), режим питания (на AMD/X3D — «Сбалансированная»), `Win32PrioritySeparation`.
 
 ---
 
