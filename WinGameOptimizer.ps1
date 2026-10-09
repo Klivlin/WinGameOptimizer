@@ -1,4 +1,7 @@
 <#
+    Copyright (c) 2026 Klivlin. Все права защищены / All rights reserved.
+    Копирование, изменение и распространение без письменного разрешения запрещены (см. LICENSE).
+
 .SYNOPSIS
     WinGameOptimizer — GUI-утилита для тюнинга Windows под игры (Valorant, CS2, Dota 2 и др.)
 

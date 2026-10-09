@@ -168,5 +168,6 @@ These tweaks reduce background system load, smooth out frame-time, and lower inp
 
 ## Лицензия / License
 
-MIT — используйте и изменяйте свободно, на свой риск.
-MIT — use and modify freely, at your own risk.
+© 2026 Klivlin. Все права защищены. Код опубликован для ознакомления; копирование, изменение, перепубликация и распространение без письменного разрешения автора запрещены. Подробности — в файле [LICENSE](LICENSE).
+
+© 2026 Klivlin. All rights reserved. Source is published for viewing only; copying, modification, republishing and redistribution without the author's written permission are prohibited. See [LICENSE](LICENSE).
