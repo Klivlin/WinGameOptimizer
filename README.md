@@ -1,8 +1,8 @@
 # WinGameOptimizer
 
-GUI-утилита на PowerShell (Windows Forms) для тюнинга Windows 10/11 под игры — Valorant, CS2/CS:GO, Dota 2 и другие. Все действия обратимы: перед применением создаётся бэкап затронутых настроек, есть кнопки восстановления.
+GUI-утилита на PowerShell (Windows Forms) для тюнинга Windows 10/11 под игры — Valorant, CS2/CS:GO, Dota 2 и другие. Перед применением создаётся бэкап затронутых настроек (схема питания, ветки реестра, службы), есть кнопки восстановления. Исключение — удаление предустановленных приложений (Debloat): его откатить можно только переустановкой из Microsoft Store.
 
-A PowerShell GUI (Windows Forms) utility for tuning Windows 10/11 for gaming — Valorant, CS2/CS:GO, Dota 2 and others. Every action is reversible: a backup of affected settings is created before applying, with restore buttons provided.
+A PowerShell GUI (Windows Forms) utility for tuning Windows 10/11 for gaming — Valorant, CS2/CS:GO, Dota 2 and others. A backup of affected settings (power scheme, registry branches, services) is created before applying, with restore buttons provided. The exception is app removal (Debloat), which can only be undone by reinstalling from the Microsoft Store.
 
 > ⚠️ Запускать от имени администратора. Перед первым применением рекомендуется создать точку восстановления системы.
 > ⚠️ Run as Administrator. Creating a Windows System Restore point before first use is recommended.
@@ -11,12 +11,17 @@ A PowerShell GUI (Windows Forms) utility for tuning Windows 10/11 for gaming —
 
 ## Запуск / Usage
 
+1. Скачайте `WinGameOptimizer.ps1` и `Start-WinGameOptimizer.bat` кнопкой **Raw → «Сохранить как»** или ZIP-архивом репозитория. Не копируйте код через буфер обмена: без UTF-8 BOM Windows PowerShell 5.1 ломает кириллицу и парсинг скрипта.
+2. Положите оба файла в одну папку и запустите `Start-WinGameOptimizer.bat` двойным кликом. Он исправит кодировку файла (UTF-8 с BOM) и запустит скрипт; права администратора (UAC) запросятся автоматически.
+
+Альтернатива (если `.ps1` уже сохранён в UTF-8 с BOM):
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 ```
 
-Скрипт сам запросит повышение прав (UAC), если его не хватает.
-The script requests elevation (UAC) automatically if not already running as admin.
+1. Download `WinGameOptimizer.ps1` and `Start-WinGameOptimizer.bat` via **Raw → Save as** or the repository ZIP. Do not copy-paste the code: without a UTF-8 BOM Windows PowerShell 5.1 breaks Cyrillic text and parsing.
+2. Put both files in one folder and double-click `Start-WinGameOptimizer.bat`. It fixes the file encoding (UTF-8 with BOM) and starts the script; UAC elevation is requested automatically.
 
 ---
 
@@ -36,7 +41,7 @@ The script requests elevation (UAC) automatically if not already running as admi
 ### 1. Вкладка «Питание» / Power tab
 | Настройка (RU) | Setting (EN) | Эффект |
 |---|---|---|
-| Ultimate Performance план питания | Ultimate Performance power plan | Убирает троттлинг CPU/энергосберегающие переходы, убирает скрытый план питания Windows |
+| Ultimate Performance план питания | Ultimate Performance power plan | Включает скрытый план питания Windows: меньше энергосберегающих переходов CPU. На AMD X3D заменяется на «Сбалансированная» (см. ниже) |
 | Отключить USB selective suspend | Disable USB selective suspend | USB-устройства (мышь/геймпад) не "засыпают", снижает случайные микро-лаги |
 | Отключить core parking | Disable core parking | Все логические ядра CPU остаются активными, снижает задержку пробуждения ядра при нагрузке |
 
@@ -49,7 +54,7 @@ The script requests elevation (UAC) automatically if not already running as admi
 
 | RU | EN | Эффект |
 |---|---|---|
-| Hardware-Accelerated GPU Scheduling (HAGS) | same | Планирование GPU на уровне драйвера вместо CPU-диспетчера, снижает задержку рендера на поддерживаемых GPU |
+| Hardware-Accelerated GPU Scheduling (HAGS) (включается; в спорных случаях сравните сами) | same | Планирование GPU на уровне драйвера вместо CPU-диспетчера, снижает задержку рендера на поддерживаемых GPU |
 | Отключить Game DVR / Xbox Game Bar overlay | Disable Game DVR / Xbox Game Bar overlay | Убирает фоновую запись/оверлей, разгружает GPU/CPU во время игры |
 | Приоритет GPU/CPU для игр (MMCSS "Games") (выкл. по умолчанию) | Game-priority MMCSS profile (off by default) | MMCSS в основном влияет на аудиопотоки; для игр эффект спорный — включайте и сравнивайте |
 | Визуальные эффекты "Лучшее быстродействие" (выкл. по умолчанию) | "Best performance" visual effects (off by default) | Отключает анимации Windows, немного освобождает CPU/GPU |
@@ -67,7 +72,7 @@ The script requests elevation (UAC) automatically if not already running as admi
 | Остановить фоновые службы (SysMain, WSearch, DiagTrack, dmwappushservice, MapsBroker, lfsvc, RetailDemo, WerSvc) | Stop background services (same list) | Снижает фоновую нагрузку на CPU/диск от индексации, телеметрии, геолокации и т.д. |
 | Отключить фоновые задачи планировщика (телеметрия, CEIP, карты, отзывы) | Disable background scheduled tasks (telemetry, CEIP, maps, feedback) | Убирает периодические фоновые "просыпания" системы |
 | Отключить фоновые UWP-приложения | Disable background UWP apps | UWP-приложения из Store не работают в фоне и не тратят ресурсы |
-| Отключить энергосбережение сетевой карты | Disable NIC power saving | NIC не уходит в低power-режим, снижает сетевые микро-лаги/джиттер |
+| Отключить энергосбережение сетевой карты | Disable NIC power saving | NIC не уходит в режим энергосбережения, снижает сетевые микро-лаги/джиттер |
 | Отключить гибернацию (выкл. по умолчанию) | Disable hibernation (off by default) | Освобождает место на диске (убирает hiberfil.sys) |
 | Очистить temp/кэш/корзину | Clean temp/cache/recycle bin | Освобождает место, убирает мусорные файлы, которые может сканировать антивирус/индексатор (Prefetch не трогается) |
 | Win32PrioritySeparation = 18 (выкл. по умолчанию) | same (off by default) | Фиксированный длинный квант планировщика: фоновый поток реже вытесняет игровой. Эффект зависит от системы — тестируйте |
@@ -88,7 +93,7 @@ Before changing IRQ affinity / MSI mode, the relevant device registry branch is 
 ### 6. Вкладка «Advanced (риск)» / Advanced (risk) tab
 | RU | EN | Эффект |
 |---|---|---|
-| | Отключить Spectre/Meltdown mitigations (выкл. по умолчанию, с отдельным подтверждением) | Disable Spectre/Meltdown mitigations (off by default, separate confirmation) | Заметный прирост в CPU-bound сценариях, но снижает защиту процессора от атак по сторонним каналам |
+| Отключить Spectre/Meltdown mitigations (выкл. по умолчанию, с отдельным подтверждением) | Disable Spectre/Meltdown mitigations (off by default, separate confirmation) | Заметный прирост в CPU-bound сценариях, но снижает защиту процессора от атак по сторонним каналам |
 | Отключить Microsoft Defender (выкл. по умолчанию, с отдельным подтверждением и кнопкой «Включить обратно») | Disable Microsoft Defender (off by default, confirmation + one-click re-enable) | Убирает фоновые проверки файлов в реальном времени; прирост обычно небольшой, риски серьёзные — см. ниже |
 
 #### Риски отключения Defender / Defender risks
@@ -155,12 +160,6 @@ Select a game (Valorant / CS2 / CS:GO / Dota 2) and start a background process m
 These tweaks reduce background system load, smooth out frame-time, and lower input/network latency. They are **not a substitute** for hardware upgrades and won't guarantee a multiplied FPS boost in GPU-bound scenarios — the GPU and in-game graphics settings matter most there.
 
 ---
-
-## Запуск / Running
-
-Положите `Start-WinGameOptimizer.bat` и `WinGameOptimizer.ps1` в одну папку и запустите `.bat` (двойной клик). Он исправит кодировку файла (UTF-8 с BOM) и запустит скрипт; права администратора запросятся автоматически. Не копируйте код через буфер обмена — скачивайте файлы кнопкой Raw/ZIP: без BOM Windows PowerShell 5.1 ломает кириллицу и парсинг.
-
-Put both files in one folder and run the `.bat`. It fixes the file encoding (UTF-8 with BOM) and launches the script, requesting admin rights automatically. Download files via Raw/ZIP rather than copy-pasting.
 
 ## Требования / Requirements
 
