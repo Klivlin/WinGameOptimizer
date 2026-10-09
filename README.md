@@ -156,6 +156,12 @@ These tweaks reduce background system load, smooth out frame-time, and lower inp
 
 ---
 
+## Запуск / Running
+
+Положите `Start-WinGameOptimizer.bat` и `WinGameOptimizer.ps1` в одну папку и запустите `.bat` (двойной клик). Он исправит кодировку файла (UTF-8 с BOM) и запустит скрипт; права администратора запросятся автоматически. Не копируйте код через буфер обмена — скачивайте файлы кнопкой Raw/ZIP: без BOM Windows PowerShell 5.1 ломает кириллицу и парсинг.
+
+Put both files in one folder and run the `.bat`. It fixes the file encoding (UTF-8 with BOM) and launches the script, requesting admin rights automatically. Download files via Raw/ZIP rather than copy-pasting.
+
 ## Требования / Requirements
 
 - Windows 10 (1903+) или Windows 11, x64.
