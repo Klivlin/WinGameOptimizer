@@ -1,4 +1,4 @@
-﻿<#
+﻿﻿<#
     Copyright (c) 2026 Klivlin. Все права защищены / All rights reserved.
     Копирование, изменение и распространение без письменного разрешения запрещены (см. LICENSE).
 
@@ -761,117 +761,187 @@ function Stop-ProcessBoost {
 # ---------------------------------------------------------------------------
 # 4. GUI
 # ---------------------------------------------------------------------------
+try {
+    Add-Type -Namespace WGO -Name Dpi -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
+    [WGO.Dpi]::SetProcessDPIAware() | Out-Null
+} catch { }
+
+$ColorAccent = [System.Drawing.Color]::FromArgb(46, 125, 50)
+$ColorRisk   = [System.Drawing.Color]::FromArgb(183, 28, 28)
+$ColorMuted  = [System.Drawing.Color]::FromArgb(97, 97, 97)
+$ColorWarn   = [System.Drawing.Color]::FromArgb(230, 81, 0)
+$UiFont      = New-Object System.Drawing.Font("Segoe UI", 9)
+$Dpi = 1.0
+try { $g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $Dpi = $g.DpiX / 96.0; $g.Dispose() } catch { }
+$WrapWidth   = [int](820 * $Dpi)
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "WinGameOptimizer — Valorant / CS2 / Dota 2"
-$form.Size = New-Object System.Drawing.Size(760, 720)
+$form.Font = $UiFont
+$form.ClientSize = New-Object System.Drawing.Size([int](900 * $Dpi), [int](780 * $Dpi))
+$form.MinimumSize = New-Object System.Drawing.Size([int](760 * $Dpi), [int](600 * $Dpi))
 $form.StartPosition = "CenterScreen"
-$form.FormBorderStyle = "FixedDialog"
-$form.MaximizeBox = $false
+$form.Padding = New-Object System.Windows.Forms.Padding(10)
 
 $tabs = New-Object System.Windows.Forms.TabControl
-$tabs.Size = New-Object System.Drawing.Size(730, 420)
-$tabs.Location = New-Object System.Drawing.Point(15, 15)
-$form.Controls.Add($tabs)
+$tabs.Dock = "Fill"
+$tabs.Font = $UiFont
+$tabs.Padding = New-Object System.Drawing.Point(14, 5)
 
 $checkboxes = @{}
 
+function New-StyledButton {
+    param([string]$Text, [int]$Width = 160, [bool]$Primary = $false)
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $Text
+    $b.AutoSize = $true
+    $b.MinimumSize = New-Object System.Drawing.Size($Width, 34)
+    $b.Margin = New-Object System.Windows.Forms.Padding(0, 4, 8, 4)
+    $b.FlatStyle = "Flat"
+    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
+    if ($Primary) {
+        $b.BackColor = $ColorAccent
+        $b.ForeColor = [System.Drawing.Color]::White
+        $b.FlatAppearance.BorderSize = 0
+        $b.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    } else {
+        $b.FlatAppearance.BorderColor = [System.Drawing.Color]::Silver
+    }
+    return $b
+}
+
+# Вкладка с вертикальным прокручиваемым списком опций; возвращает панель-контейнер.
 function New-OptTab {
     param([string]$Title)
     $tab = New-Object System.Windows.Forms.TabPage
     $tab.Text = $Title
+    $flow = New-Object System.Windows.Forms.FlowLayoutPanel
+    $flow.Dock = "Fill"
+    $flow.FlowDirection = "TopDown"
+    $flow.WrapContents = $false
+    $flow.AutoScroll = $true
+    $flow.Padding = New-Object System.Windows.Forms.Padding(14, 10, 14, 10)
+    $tab.Controls.Add($flow)
     $tabs.TabPages.Add($tab)
-    return $tab
+    return $flow
+}
+
+function Add-OptNote {
+    param($Page, [string]$Text, $Color = $null, [bool]$Bold = $false)
+    $l = New-Object System.Windows.Forms.Label
+    $l.AutoSize = $true
+    $l.MaximumSize = New-Object System.Drawing.Size($WrapWidth, 0)
+    $l.Text = $Text
+    $l.ForeColor = if ($Color) { $Color } else { $ColorMuted }
+    if ($Bold) { $l.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold) }
+    $l.Margin = New-Object System.Windows.Forms.Padding(2, 2, 2, 10)
+    $Page.Controls.Add($l)
 }
 
 function Add-OptCheckbox {
-    param($Tab, [string]$Key, [string]$Label, [int]$Y, [bool]$Checked = $true)
+    param($Page, [string]$Key, [string]$Label, [string]$Desc = "", [bool]$Checked = $true, [bool]$Risky = $false)
     $cb = New-Object System.Windows.Forms.CheckBox
+    $cb.AutoSize = $true
+    $cb.MaximumSize = New-Object System.Drawing.Size($WrapWidth, 0)
     $cb.Text = $Label
-    $cb.Location = New-Object System.Drawing.Point(15, $Y)
-    $cb.Size = New-Object System.Drawing.Size(680, 24)
     $cb.Checked = $Checked
-    $Tab.Controls.Add($cb)
+    $cb.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Regular)
+    if ($Risky) { $cb.ForeColor = $ColorRisk }
+    $cb.Margin = New-Object System.Windows.Forms.Padding(2, 6, 2, 0)
+    $Page.Controls.Add($cb)
     $checkboxes[$Key] = $cb
+    if ($Desc) {
+        $d = New-Object System.Windows.Forms.Label
+        $d.AutoSize = $true
+        $d.MaximumSize = New-Object System.Drawing.Size(($WrapWidth - 24), 0)
+        $d.Text = $Desc
+        $d.ForeColor = if ($Risky) { $ColorRisk } else { $ColorMuted }
+        $d.Margin = New-Object System.Windows.Forms.Padding(24, 0, 2, 4)
+        $Page.Controls.Add($d)
+    }
 }
 
-$tabPower = New-OptTab "Питание"
-Add-OptCheckbox $tabPower "UltimatePower" "Включить план питания Ultimate Performance" 20
-Add-OptCheckbox $tabPower "UsbSuspend"    "Отключить USB selective suspend" 55
-Add-OptCheckbox $tabPower "CoreParking"   "Отключить core parking (ядра CPU всегда активны)" 90
+# Вкладка со списком (CheckedListBox) + строка кнопок снизу + заголовок сверху.
+function New-ListTab {
+    param([string]$Title, [string]$Header, $HeaderColor = $null)
+    $tab = New-Object System.Windows.Forms.TabPage
+    $tab.Text = $Title
+    $tab.Padding = New-Object System.Windows.Forms.Padding(12)
+    $list = New-Object System.Windows.Forms.CheckedListBox
+    $list.Dock = "Fill"
+    $list.CheckOnClick = $true
+    $list.HorizontalScrollbar = $true
+    $btns = New-Object System.Windows.Forms.FlowLayoutPanel
+    $btns.Dock = "Bottom"
+    $btns.AutoSize = $true
+    $btns.FlowDirection = "LeftToRight"
+    $btns.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
+    $hdr = New-Object System.Windows.Forms.Label
+    $hdr.Dock = "Top"
+    $hdr.AutoSize = $false
+    $hdr.Height = [int](44 * $Dpi)
+    $hdr.Text = $Header
+    $hdr.ForeColor = if ($HeaderColor) { $HeaderColor } else { $ColorMuted }
+    $tab.Controls.Add($list)
+    $tab.Controls.Add($btns)
+    $tab.Controls.Add($hdr)
+    $tabs.TabPages.Add($tab)
+    return [PSCustomObject]@{ List = $list; Buttons = $btns }
+}
+
+# --- Питание ---
+$pgPower = New-OptTab "Питание"
 if (Test-IsX3D) {
-    $lblX3d = New-Object System.Windows.Forms.Label
-    $lblX3d.Text = "Обнаружен X3D: Ultimate Performance заменяется на «Сбалансированная», core parking не трогается."
-    $lblX3d.Location = New-Object System.Drawing.Point(10, 130)
-    $lblX3d.Size = New-Object System.Drawing.Size(560, 40)
-    $lblX3d.ForeColor = [System.Drawing.Color]::DarkOrange
-    $tabPower.Controls.Add($lblX3d)
+    Add-OptNote $pgPower "Обнаружен процессор X3D: вместо Ultimate Performance будет включена «Сбалансированная», core parking не трогается (рекомендация AMD для драйвера 3D V-Cache)." $ColorWarn $true
 }
+Add-OptCheckbox $pgPower "UltimatePower" "План питания Ultimate Performance" "Меньше энергосберегающих переходов CPU. На AMD X3D автоматически заменяется на «Сбалансированная»."
+Add-OptCheckbox $pgPower "UsbSuspend"    "Отключить USB selective suspend" "USB-устройства (мышь, геймпад) не «засыпают» — меньше случайных микро-лагов."
+Add-OptCheckbox $pgPower "CoreParking"   "Отключить core parking" "Все ядра CPU всегда активны. Пропускается на X3D."
 
-$tabGpu = New-OptTab "GPU / Дисплей"
-Add-OptCheckbox $tabGpu "HAGS"       "Hardware-Accelerated GPU Scheduling" 20
-Add-OptCheckbox $tabGpu "GameDVR"    "Отключить Game DVR / Xbox Game Bar overlay" 55
-Add-OptCheckbox $tabGpu "MMCSS"      "Приоритет GPU/CPU для игр (MMCSS 'Games') — эффект спорный, тестируйте" 90 $false
-Add-OptCheckbox $tabGpu "VisualFx"   "Визуальные эффекты: 'Лучшее быстродействие'" 125 $false
+# --- GPU / Дисплей ---
+$pgGpu = New-OptTab "GPU / Дисплей"
+Add-OptCheckbox $pgGpu "HAGS"     "Hardware-Accelerated GPU Scheduling (HAGS)" "Планирование GPU на стороне видеокарты. Нужна перезагрузка; если станет хуже — отключите."
+Add-OptCheckbox $pgGpu "GameDVR"  "Отключить Game DVR / Xbox Game Bar overlay" "Убирает фоновую запись и оверлей. На двухчиплетных X3D пропускается (нужен драйверу 3D V-Cache)."
+Add-OptCheckbox $pgGpu "MMCSS"    "Приоритет MMCSS-профиля «Games»" "Эффект спорный: MMCSS в основном влияет на аудиопотоки. Включайте и сравнивайте." $false
+Add-OptCheckbox $pgGpu "VisualFx" "Визуальные эффекты: «Лучшее быстродействие»" "Отключает анимации Windows." $false
 
-$tabNet = New-OptTab "Сеть"
-Add-OptCheckbox $tabNet "NetThrottle" "Отключить Network Throttling Index" 20
-Add-OptCheckbox $tabNet "Nagle"       "Отключить алгоритм Нагла (TCPNoDelay) — только TCP, большинство игр на UDP" 55 $false
-Add-OptCheckbox $tabNet "DnsWinsock"  "Flush DNS + сброс Winsock (может сбросить сетевые настройки)" 90 $false
+# --- Сеть ---
+$pgNet = New-OptTab "Сеть"
+Add-OptCheckbox $pgNet "NetThrottle" "Отключить Network Throttling Index" "Снимает ограничение мультимедиа-трафика в MMCSS."
+Add-OptCheckbox $pgNet "Nagle"       "Отключить алгоритм Нагла (TCPNoDelay)" "Влияет только на TCP; большинство шутеров работает по UDP, польза мала." $false
+Add-OptCheckbox $pgNet "DnsWinsock"  "Flush DNS + сброс Winsock" "Может сбросить сетевые настройки (VPN, прокси). Нужна перезагрузка." $false
 
-$tabSys = New-OptTab "Система"
-Add-OptCheckbox $tabSys "BgServices"   "Остановить фоновые службы (SysMain, WSearch, DiagTrack, телеметрия и др.)" 20
-Add-OptCheckbox $tabSys "BgTasks"      "Отключить фоновые задачи планировщика (телеметрия, CEIP, карты)" 55
-Add-OptCheckbox $tabSys "BgApps"       "Отключить фоновые UWP-приложения" 90
-Add-OptCheckbox $tabSys "NicPower"     "Отключить энергосбережение сетевой карты" 125
-Add-OptCheckbox $tabSys "Hibernation"  "Отключить гибернацию (освободить место на диске)" 160 $false
-Add-OptCheckbox $tabSys "ClearTemp"    "Очистить temp/кэш/корзину перед применением" 195
-Add-OptCheckbox $tabSys "PrioSep"      "Win32PrioritySeparation = 18 (фиксированный длинный квант) — тестируйте" 230 $false
+# --- Система ---
+$pgSys = New-OptTab "Система"
+Add-OptCheckbox $pgSys "BgServices"  "Остановить фоновые службы" "SysMain, WSearch, DiagTrack, dmwappushservice, MapsBroker, lfsvc, RetailDemo, WerSvc."
+Add-OptCheckbox $pgSys "BgTasks"     "Отключить фоновые задачи планировщика" "Телеметрия, CEIP, карты, отзывы."
+Add-OptCheckbox $pgSys "BgApps"      "Отключить фоновые UWP-приложения" "Приложения из Store не работают в фоне."
+Add-OptCheckbox $pgSys "NicPower"    "Отключить энергосбережение сетевой карты" "Меньше сетевых микро-лагов и джиттера."
+Add-OptCheckbox $pgSys "Hibernation" "Отключить гибернацию" "Освобождает место на диске (hiberfil.sys). Включить обратно: powercfg /hibernate on." $false
+Add-OptCheckbox $pgSys "ClearTemp"   "Очистить temp / кэш / корзину" "Выполняется перед применением остальных опций. Prefetch не трогается."
+Add-OptCheckbox $pgSys "PrioSep"     "Win32PrioritySeparation = 18" "Фиксированный длинный квант планировщика. Эффект зависит от системы — тестируйте." $false
 
-$tabAdv = New-OptTab "Advanced (риск)"
-$warnLabel = New-Object System.Windows.Forms.Label
-$warnLabel.Text = "Эти настройки снижают уровень защиты системы. Применяйте осознанно."
-$warnLabel.ForeColor = [System.Drawing.Color]::DarkRed
-$warnLabel.Location = New-Object System.Drawing.Point(15, 15)
-$warnLabel.Size = New-Object System.Drawing.Size(680, 20)
-$tabAdv.Controls.Add($warnLabel)
-Add-OptCheckbox $tabAdv "Mitigations" "Отключить Spectre/Meltdown mitigations (снижает защиту CPU)" 45 $false
-Add-OptCheckbox $tabAdv "Defender"    "Отключить Microsoft Defender (защита в реальном времени) — см. риски ниже" 80 $false
-
-$lblDefRisk = New-Object System.Windows.Forms.Label
-$lblDefRisk.Text = "Риски отключения Defender:`r`n" +
+# --- Advanced (риск) ---
+$pgAdv = New-OptTab "Advanced (риск)"
+Add-OptNote $pgAdv "Эти настройки снижают уровень защиты системы. Применяйте осознанно." $ColorRisk $true
+Add-OptCheckbox $pgAdv "Mitigations" "Отключить Spectre/Meltdown mitigations" "Прирост в CPU-bound сценариях, но снижается защита процессора от атак по сторонним каналам. Нужна перезагрузка." $false $true
+Add-OptCheckbox $pgAdv "Defender"    "Отключить Microsoft Defender (защита в реальном времени)" "ПК останется без антивируса. Подробности рисков — ниже." $false $true
+Add-OptNote $pgAdv ("Риски отключения Defender:`r`n" +
  "• ПК остаётся без антивируса: вирусы, майнеры, стилеры, шифровальщики не блокируются;`r`n" +
- "• читы, моды и «кряки» из интернета часто несут вредоносный код — это главный путь заражения у геймеров;`r`n" +
+ "• читы, моды и «кряки» часто несут вредоносный код — главный путь заражения у геймеров;`r`n" +
  "• теряется защита от вредоносных скриптов, макросов и поддельных установщиков;`r`n" +
  "• сначала нужно вручную выключить «Защиту от подделки», иначе Windows всё вернёт;`r`n" +
- "• обновления Windows могут включить Defender обратно; Центр безопасности будет показывать предупреждения;`r`n" +
- "• часть античитов и приложений Microsoft Store могут сообщать о небезопасной конфигурации;`r`n" +
- "• прирост FPS обычно небольшой (единицы %) — выигрыш в основном в меньших фоновых проверках.`r`n" +
- "Полное удаление Defender не выполняется: на нём завязаны другие компоненты Windows."
-$lblDefRisk.ForeColor = [System.Drawing.Color]::DarkRed
-$lblDefRisk.Location = New-Object System.Drawing.Point(15, 110)
-$lblDefRisk.Size = New-Object System.Drawing.Size(680, 150)
-$tabAdv.Controls.Add($lblDefRisk)
-
-$btnRestoreDefender = New-Object System.Windows.Forms.Button
-$btnRestoreDefender.Text = "Включить Defender обратно"
-$btnRestoreDefender.Location = New-Object System.Drawing.Point(15, 270)
-$btnRestoreDefender.Size = New-Object System.Drawing.Size(220, 30)
+ "• обновления Windows могут включить Defender обратно, Центр безопасности будет показывать предупреждения;`r`n" +
+ "• часть античитов и приложений могут сообщать о небезопасной конфигурации;`r`n" +
+ "• прирост FPS обычно небольшой (единицы %).`r`n" +
+ "Полное удаление Defender не выполняется — только обратимое отключение.") $ColorRisk
+$btnRestoreDefender = New-StyledButton "Включить Defender обратно" 220
 $btnRestoreDefender.Add_Click({ Restore-Defender })
-$tabAdv.Controls.Add($btnRestoreDefender)
+$pgAdv.Controls.Add($btnRestoreDefender)
 
-$tabStartup = New-OptTab "Автозагрузка"
-$lblStartup = New-Object System.Windows.Forms.Label
-$lblStartup.Text = "Отмеченные пункты будут отключены (перемещены в бэкап, не удалены)."
-$lblStartup.Location = New-Object System.Drawing.Point(15, 10)
-$lblStartup.Size = New-Object System.Drawing.Size(680, 20)
-$tabStartup.Controls.Add($lblStartup)
-
-$listStartup = New-Object System.Windows.Forms.CheckedListBox
-$listStartup.Location = New-Object System.Drawing.Point(15, 35)
-$listStartup.Size = New-Object System.Drawing.Size(680, 260)
-$listStartup.CheckOnClick = $true
-$tabStartup.Controls.Add($listStartup)
-
+# --- Автозагрузка ---
+$lt = New-ListTab "Автозагрузка" "Отмеченные пункты будут отключены (перемещены в бэкап, не удалены)."
+$listStartup = $lt.List
 $Global:StartupItemsCache = @()
 function Refresh-StartupList {
     $listStartup.Items.Clear()
@@ -880,18 +950,9 @@ function Refresh-StartupList {
         $listStartup.Items.Add("$($item.Name)  —  $($item.Value)") | Out-Null
     }
 }
-
-$btnRefreshStartup = New-Object System.Windows.Forms.Button
-$btnRefreshStartup.Text = "Обновить список"
-$btnRefreshStartup.Location = New-Object System.Drawing.Point(15, 305)
-$btnRefreshStartup.Size = New-Object System.Drawing.Size(150, 30)
+$btnRefreshStartup = New-StyledButton "Обновить список" 140
 $btnRefreshStartup.Add_Click({ Refresh-StartupList })
-$tabStartup.Controls.Add($btnRefreshStartup)
-
-$btnDisableStartup = New-Object System.Windows.Forms.Button
-$btnDisableStartup.Text = "Отключить выбранные"
-$btnDisableStartup.Location = New-Object System.Drawing.Point(175, 305)
-$btnDisableStartup.Size = New-Object System.Drawing.Size(170, 30)
+$btnDisableStartup = New-StyledButton "Отключить выбранные" 170
 $btnDisableStartup.Add_Click({
     for ($i = 0; $i -lt $listStartup.Items.Count; $i++) {
         if ($listStartup.GetItemChecked($i)) {
@@ -900,27 +961,13 @@ $btnDisableStartup.Add_Click({
     }
     Refresh-StartupList
 })
-$tabStartup.Controls.Add($btnDisableStartup)
-
-$btnRestoreStartup = New-Object System.Windows.Forms.Button
-$btnRestoreStartup.Text = "Восстановить все отключённые"
-$btnRestoreStartup.Location = New-Object System.Drawing.Point(355, 305)
-$btnRestoreStartup.Size = New-Object System.Drawing.Size(200, 30)
+$btnRestoreStartup = New-StyledButton "Восстановить все отключённые" 220
 $btnRestoreStartup.Add_Click({ Restore-AllStartupItems; Refresh-StartupList })
-$tabStartup.Controls.Add($btnRestoreStartup)
+$lt.Buttons.Controls.AddRange(@($btnRefreshStartup, $btnDisableStartup, $btnRestoreStartup))
 
-$tabDebloat = New-OptTab "Debloat (приложения)"
-$lblDebloat = New-Object System.Windows.Forms.Label
-$lblDebloat.Text = "Удаление предустановленных UWP-приложений. Откат недоступен — переустановка из Microsoft Store."
-$lblDebloat.ForeColor = [System.Drawing.Color]::DarkRed
-$lblDebloat.Location = New-Object System.Drawing.Point(15, 10)
-$lblDebloat.Size = New-Object System.Drawing.Size(680, 20)
-$tabDebloat.Controls.Add($lblDebloat)
-
-$listBloat = New-Object System.Windows.Forms.CheckedListBox
-$listBloat.Location = New-Object System.Drawing.Point(15, 35)
-$listBloat.Size = New-Object System.Drawing.Size(680, 260)
-$listBloat.CheckOnClick = $true
+# --- Debloat ---
+$lt2 = New-ListTab "Debloat (приложения)" "Удаление предустановленных UWP-приложений. ОТКАТ НЕДОСТУПЕН — только переустановка из Microsoft Store." $ColorRisk
+$listBloat = $lt2.List
 foreach ($pattern in $BloatPackagePatterns) {
     $idx = $listBloat.Items.Add($pattern)
     # Teams / PowerAutomate / Family по умолчанию не отмечаем — многим нужны
@@ -928,12 +975,7 @@ foreach ($pattern in $BloatPackagePatterns) {
         $listBloat.SetItemChecked($idx, $true)
     }
 }
-$tabDebloat.Controls.Add($listBloat)
-
-$btnRemoveBloat = New-Object System.Windows.Forms.Button
-$btnRemoveBloat.Text = "Удалить выбранные приложения"
-$btnRemoveBloat.Location = New-Object System.Drawing.Point(15, 305)
-$btnRemoveBloat.Size = New-Object System.Drawing.Size(220, 30)
+$btnRemoveBloat = New-StyledButton "Удалить выбранные приложения" 240
 $btnRemoveBloat.BackColor = [System.Drawing.Color]::Khaki
 $btnRemoveBloat.Add_Click({
     $selected = @()
@@ -946,117 +988,100 @@ $btnRemoveBloat.Add_Click({
         "Подтверждение", "YesNo", "Warning")
     if ($confirm -eq "Yes") { Remove-BloatApps -Patterns $selected }
 })
-$tabDebloat.Controls.Add($btnRemoveBloat)
+$lt2.Buttons.Controls.Add($btnRemoveBloat)
 
-$tabInput = New-OptTab "Мышь / Инпут-лаг"
-Add-OptCheckbox $tabInput "MouseAccel"  "Отключить акселерацию мыши (Enhance Pointer Precision)" 20
-Add-OptCheckbox $tabInput "InputQueue"  "Уменьшить буфер очереди мыши/клавиатуры (меньше задержка)" 55
-Add-OptCheckbox $tabInput "HidPower"    "Отключить энергосбережение HID-устройств (мышь/клавиатура)" 90
+# --- Мышь / Инпут-лаг ---
+$pgInput = New-OptTab "Мышь / Инпут-лаг"
+Add-OptCheckbox $pgInput "MouseAccel" "Отключить акселерацию мыши" "Enhance Pointer Precision: линейное, предсказуемое движение курсора."
+Add-OptCheckbox $pgInput "InputQueue" "Уменьшить буфер очереди мыши/клавиатуры" "Меньше буферизация ввода драйверами mouclass/kbdclass. Нужна перезагрузка."
+Add-OptCheckbox $pgInput "HidPower"   "Отключить энергосбережение HID-устройств" "Мышь и клавиатура не «просыпаются» с задержкой."
+Add-OptNote $pgInput "ПРОДВИНУТО" $ColorRisk $true
+Add-OptCheckbox $pgInput "IrqAffinity" "Привязать прерывания мыши/клавиатуры к ядру CPU" "Выберите ядро ниже. Не CPU 0 (занят системными прерываниями); берите физическое ядро вне основных потоков игры." $false $true
 
-$lblIrq = New-Object System.Windows.Forms.Label
-$lblIrq.Text = "ПРОДВИНУТО: привязка прерываний мыши/клавиатуры к ядру CPU:"
-$lblIrq.ForeColor = [System.Drawing.Color]::DarkRed
-$lblIrq.Location = New-Object System.Drawing.Point(15, 130)
-$lblIrq.Size = New-Object System.Drawing.Size(500, 20)
-$tabInput.Controls.Add($lblIrq)
-
-Add-OptCheckbox $tabInput "IrqAffinity" "Включить привязку IRQ мыши/клавиатуры к выбранному ядру" 155 $false
-
+$rowCore = New-Object System.Windows.Forms.FlowLayoutPanel
+$rowCore.AutoSize = $true
+$rowCore.FlowDirection = "LeftToRight"
+$rowCore.Margin = New-Object System.Windows.Forms.Padding(22, 0, 0, 8)
+$lblCore = New-Object System.Windows.Forms.Label
+$lblCore.Text = "Ядро:"
+$lblCore.AutoSize = $true
+$lblCore.Margin = New-Object System.Windows.Forms.Padding(0, 6, 6, 0)
 $comboCore = New-Object System.Windows.Forms.ComboBox
-$comboCore.Location = New-Object System.Drawing.Point(35, 185)
-$comboCore.Size = New-Object System.Drawing.Size(200, 24)
+$comboCore.Width = 120
 $comboCore.DropDownStyle = "DropDownList"
 $coreCount = [Environment]::ProcessorCount
 for ($c = 0; $c -lt $coreCount; $c++) { $comboCore.Items.Add("CPU $c") | Out-Null }
 $comboCore.SelectedIndex = [Math]::Min(2, $coreCount - 1)
-$tabInput.Controls.Add($comboCore)
+$rowCore.Controls.AddRange(@($lblCore, $comboCore))
+$pgInput.Controls.Add($rowCore)
 
-$lblCoreNote = New-Object System.Windows.Forms.Label
-$lblCoreNote.Text = "Рекомендуется не CPU 0 (обычно занят системными прерываниями)."
-$lblCoreNote.Location = New-Object System.Drawing.Point(245, 189)
-$lblCoreNote.Size = New-Object System.Drawing.Size(420, 20)
-$tabInput.Controls.Add($lblCoreNote)
+Add-OptCheckbox $pgInput "MsiMode" "ЭКСПЕРИМЕНТ: принудительный MSI-режим прерываний для HID" "Риск: устройство может отказать (код 10 в Диспетчере устройств), если драйвер не поддерживает MSI." $false $true
 
-Add-OptCheckbox $tabInput "MsiMode" "ЭКСПЕРИМЕНТ: принудительный MSI-режим прерываний для HID (риск: код 10)" 220 $false
-
-$btnRestoreInput = New-Object System.Windows.Forms.Button
-$btnRestoreInput.Text = "Восстановить настройки устройств ввода"
-$btnRestoreInput.Location = New-Object System.Drawing.Point(15, 260)
-$btnRestoreInput.Size = New-Object System.Drawing.Size(280, 30)
+$btnRestoreInput = New-StyledButton "Восстановить настройки устройств ввода" 300
+$btnRestoreInput.Margin = New-Object System.Windows.Forms.Padding(2, 12, 2, 6)
 $btnRestoreInput.Add_Click({
     $confirm = [System.Windows.Forms.MessageBox]::Show(
         "Восстановить настройки мыши/клавиатуры/HID из бэкапа?", "Подтверждение", "YesNo", "Question")
     if ($confirm -eq "Yes") { Restore-InputDeviceBackups }
 })
-$tabInput.Controls.Add($btnRestoreInput)
+$pgInput.Controls.Add($btnRestoreInput)
+Add-OptNote $pgInput ("IRQ affinity и MSI меняют низкоуровневые параметры драйверов. Перед применением создаётся бэкап затронутых веток реестра.`r`n" +
+ "Если мышь/клавиатура перестанут отвечать — переподключите устройство или откатите кнопкой выше и перезагрузитесь.")
 
-$noteInput = New-Object System.Windows.Forms.Label
-$noteInput.Text = "IRQ affinity и MSI меняют низкоуровневые параметры драйверов устройств.`r`nПеред применением создаётся бэкап затронутых веток реестра устройства.`r`nЕсли мышь/клавиатура перестанут отвечать — переподключите устройство`r`nили откатите через 'Восстановить настройки устройств ввода' и перезагрузитесь."
-$noteInput.Location = New-Object System.Drawing.Point(15, 300)
-$noteInput.Size = New-Object System.Drawing.Size(680, 70)
-$tabInput.Controls.Add($noteInput)
-
-$tabGame = New-OptTab "Профиль игры"
+# --- Профиль игры ---
+$pgGame = New-OptTab "Профиль игры"
+Add-OptNote $pgGame "Запустите мониторинг ПЕРЕД игрой: при обнаружении процесса ему будет выставлен приоритет High и affinity на все ядра. Анти-чит процессы (vgc.exe, cs2-anticheat и т.п.) не трогаются."
+$rowGame = New-Object System.Windows.Forms.FlowLayoutPanel
+$rowGame.AutoSize = $true
+$rowGame.FlowDirection = "LeftToRight"
 $lblGame = New-Object System.Windows.Forms.Label
 $lblGame.Text = "Игра:"
-$lblGame.Location = New-Object System.Drawing.Point(15, 25)
-$lblGame.Size = New-Object System.Drawing.Size(60, 20)
-$tabGame.Controls.Add($lblGame)
-
+$lblGame.AutoSize = $true
+$lblGame.Margin = New-Object System.Windows.Forms.Padding(0, 8, 6, 0)
 $comboGame = New-Object System.Windows.Forms.ComboBox
-$comboGame.Location = New-Object System.Drawing.Point(80, 22)
-$comboGame.Size = New-Object System.Drawing.Size(220, 24)
+$comboGame.Width = 220
 $comboGame.DropDownStyle = "DropDownList"
+$comboGame.Margin = New-Object System.Windows.Forms.Padding(0, 5, 12, 0)
 $GameProfiles.Keys | ForEach-Object { $comboGame.Items.Add($_) | Out-Null }
 $comboGame.SelectedIndex = 0
-$tabGame.Controls.Add($comboGame)
-
-$btnStartBoost = New-Object System.Windows.Forms.Button
-$btnStartBoost.Text = "Запустить автоповышение приоритета"
-$btnStartBoost.Location = New-Object System.Drawing.Point(15, 60)
-$btnStartBoost.Size = New-Object System.Drawing.Size(280, 30)
+$btnStartBoost = New-StyledButton "Запустить автоповышение приоритета" 260
 $btnStartBoost.Add_Click({
     $gameName = $comboGame.SelectedItem.ToString()
     $procName = $GameProfiles[$gameName]
     Start-ProcessBoost -ProcessName $procName
 })
-$tabGame.Controls.Add($btnStartBoost)
-
-$btnStopBoost = New-Object System.Windows.Forms.Button
-$btnStopBoost.Text = "Остановить"
-$btnStopBoost.Location = New-Object System.Drawing.Point(305, 60)
-$btnStopBoost.Size = New-Object System.Drawing.Size(120, 30)
+$btnStopBoost = New-StyledButton "Остановить" 110
 $btnStopBoost.Add_Click({ Stop-ProcessBoost })
-$tabGame.Controls.Add($btnStopBoost)
+$rowGame.Controls.AddRange(@($lblGame, $comboGame, $btnStartBoost, $btnStopBoost))
+$pgGame.Controls.Add($rowGame)
 
-$noteGame = New-Object System.Windows.Forms.Label
-$noteGame.Text = "Запустите мониторинг ПЕРЕД игрой: при обнаружении процесса ему будет`r`nавтоматически выставлен приоритет High и affinity на все ядра.`r`nАнти-чит процессы (vgc.exe, cs2-anticheat и т.п.) не трогаются."
-$noteGame.Location = New-Object System.Drawing.Point(15, 100)
-$noteGame.Size = New-Object System.Drawing.Size(680, 60)
-$tabGame.Controls.Add($noteGame)
-
-# --- Нижняя панель: лог, кнопки ---
+# --- Нижняя часть: журнал + кнопки ---
 $Global:LogBox = New-Object System.Windows.Forms.TextBox
 $Global:LogBox.Multiline = $true
 $Global:LogBox.ScrollBars = "Vertical"
 $Global:LogBox.ReadOnly = $true
-$Global:LogBox.Location = New-Object System.Drawing.Point(15, 450)
-$Global:LogBox.Size = New-Object System.Drawing.Size(730, 170)
+$Global:LogBox.Dock = "Fill"
 $Global:LogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-$form.Controls.Add($Global:LogBox)
 
-$btnBackup = New-Object System.Windows.Forms.Button
-$btnBackup.Text = "Создать бэкап"
-$btnBackup.Location = New-Object System.Drawing.Point(15, 630)
-$btnBackup.Size = New-Object System.Drawing.Size(140, 35)
+$grpLog = New-Object System.Windows.Forms.GroupBox
+$grpLog.Text = "Журнал"
+$grpLog.Dock = "Bottom"
+$grpLog.Height = [int](160 * $Dpi)
+$grpLog.Padding = New-Object System.Windows.Forms.Padding(8, 4, 8, 8)
+$grpLog.Controls.Add($Global:LogBox)
+
+$btnBackup = New-StyledButton "Создать бэкап" 140
 $btnBackup.Add_Click({ Backup-CurrentState | Out-Null })
-$form.Controls.Add($btnBackup)
 
-$btnApply = New-Object System.Windows.Forms.Button
-$btnApply.Text = "Применить выбранное"
-$btnApply.Location = New-Object System.Drawing.Point(165, 630)
-$btnApply.Size = New-Object System.Drawing.Size(180, 35)
-$btnApply.BackColor = [System.Drawing.Color]::LightGreen
+$btnRestore = New-StyledButton "Восстановить из бэкапа" 190
+$btnRestore.Add_Click({
+    $confirm = [System.Windows.Forms.MessageBox]::Show(
+        "Восстановить последний сохранённый бэкап настроек?", "Подтверждение", "YesNo", "Question")
+    if ($confirm -eq "Yes") { Restore-FromBackup }
+})
+
+$btnApply = New-StyledButton "Применить выбранное" 200 $true
+$btnApply.Margin = New-Object System.Windows.Forms.Padding(8, 4, 0, 4)
 $btnApply.Add_Click({
     $backupDir = Backup-CurrentState
     Write-Log "=== Применение выбранных оптимизаций ==="
@@ -1118,25 +1143,52 @@ $btnApply.Add_Click({
     Write-Log "=== Готово. Некоторые изменения требуют перезагрузки. ==="
     [System.Windows.Forms.MessageBox]::Show("Оптимизации применены. Рекомендуется перезагрузка компьютера.`r`nБэкап: $backupDir", "WinGameOptimizer") | Out-Null
 })
-$form.Controls.Add($btnApply)
 
-$btnRestore = New-Object System.Windows.Forms.Button
-$btnRestore.Text = "Восстановить из бэкапа"
-$btnRestore.Location = New-Object System.Drawing.Point(355, 630)
-$btnRestore.Size = New-Object System.Drawing.Size(180, 35)
-$btnRestore.Add_Click({
-    $confirm = [System.Windows.Forms.MessageBox]::Show(
-        "Восстановить последний сохранённый бэкап настроек?", "Подтверждение", "YesNo", "Question")
-    if ($confirm -eq "Yes") { Restore-FromBackup }
-})
-$form.Controls.Add($btnRestore)
-
-$btnExit = New-Object System.Windows.Forms.Button
-$btnExit.Text = "Закрыть"
-$btnExit.Location = New-Object System.Drawing.Point(605, 630)
-$btnExit.Size = New-Object System.Drawing.Size(140, 35)
+$btnExit = New-StyledButton "Закрыть" 110
+$btnExit.Margin = New-Object System.Windows.Forms.Padding(8, 4, 0, 4)
 $btnExit.Add_Click({ Stop-ProcessBoost; $form.Close() })
-$form.Controls.Add($btnExit)
+
+$flowLeft = New-Object System.Windows.Forms.FlowLayoutPanel
+$flowLeft.Dock = "Left"
+$flowLeft.AutoSize = $true
+$flowLeft.FlowDirection = "LeftToRight"
+$flowLeft.Controls.AddRange(@($btnBackup, $btnRestore))
+
+$flowRight = New-Object System.Windows.Forms.FlowLayoutPanel
+$flowRight.Dock = "Right"
+$flowRight.AutoSize = $true
+$flowRight.FlowDirection = "RightToLeft"
+$flowRight.Controls.AddRange(@($btnExit, $btnApply))
+
+$pnlButtons = New-Object System.Windows.Forms.Panel
+$pnlButtons.Dock = "Bottom"
+$pnlButtons.Height = [int](50 * $Dpi)
+$pnlButtons.Controls.Add($flowLeft)
+$pnlButtons.Controls.Add($flowRight)
+
+# --- Заголовок ---
+$cpuName = try { (Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim() } catch { "CPU не определён" }
+$lblTitle = New-Object System.Windows.Forms.Label
+$lblTitle.Text = "WinGameOptimizer"
+$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold)
+$lblTitle.ForeColor = $ColorAccent
+$lblTitle.AutoSize = $true
+$lblTitle.Location = New-Object System.Drawing.Point(0, 2)
+$lblSub = New-Object System.Windows.Forms.Label
+$lblSub.Text = "$cpuName   •   отметьте нужное на вкладках и нажмите «Применить выбранное» (бэкап создаётся автоматически)"
+$lblSub.ForeColor = $ColorMuted
+$lblSub.AutoSize = $true
+$lblSub.Location = New-Object System.Drawing.Point(2, 34)
+$pnlHeader = New-Object System.Windows.Forms.Panel
+$pnlHeader.Dock = "Top"
+$pnlHeader.Height = [int](58 * $Dpi)
+$pnlHeader.Controls.AddRange(@($lblTitle, $lblSub))
+
+# Порядок добавления важен для Dock: Fill первым, затем Bottom'ы, Top последним.
+$form.Controls.Add($tabs)
+$form.Controls.Add($grpLog)
+$form.Controls.Add($pnlButtons)
+$form.Controls.Add($pnlHeader)
 
 Refresh-StartupList
 Write-Log "WinGameOptimizer запущен. Backup-папка: $BackupRoot"
