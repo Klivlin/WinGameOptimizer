@@ -778,8 +778,11 @@ $WrapWidth   = [int](820 * $Dpi)
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "WinGameOptimizer — Valorant / CS2 / Dota 2"
 $form.Font = $UiFont
-$form.ClientSize = New-Object System.Drawing.Size([int](900 * $Dpi), [int](780 * $Dpi))
-$form.MinimumSize = New-Object System.Drawing.Size([int](760 * $Dpi), [int](600 * $Dpi))
+$wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$formW = [Math]::Min([int](900 * $Dpi), [int]($wa.Width * 0.95))
+$formH = [Math]::Min([int](780 * $Dpi), [int]($wa.Height * 0.90))
+$form.ClientSize = New-Object System.Drawing.Size($formW, $formH)
+$form.MinimumSize = New-Object System.Drawing.Size([Math]::Min([int](760 * $Dpi), $formW), [Math]::Min([int](560 * $Dpi), $formH))
 $form.StartPosition = "CenterScreen"
 $form.Padding = New-Object System.Windows.Forms.Padding(10)
 
@@ -1065,8 +1068,7 @@ $Global:LogBox.Font = New-Object System.Drawing.Font("Consolas", 9)
 
 $grpLog = New-Object System.Windows.Forms.GroupBox
 $grpLog.Text = "Журнал"
-$grpLog.Dock = "Bottom"
-$grpLog.Height = [int](160 * $Dpi)
+$grpLog.Dock = "Fill"
 $grpLog.Padding = New-Object System.Windows.Forms.Padding(8, 4, 8, 8)
 $grpLog.Controls.Add($Global:LogBox)
 
@@ -1161,8 +1163,7 @@ $flowRight.FlowDirection = "RightToLeft"
 $flowRight.Controls.AddRange(@($btnExit, $btnApply))
 
 $pnlButtons = New-Object System.Windows.Forms.Panel
-$pnlButtons.Dock = "Bottom"
-$pnlButtons.Height = [int](50 * $Dpi)
+$pnlButtons.Dock = "Fill"
 $pnlButtons.Controls.Add($flowLeft)
 $pnlButtons.Controls.Add($flowRight)
 
@@ -1180,15 +1181,24 @@ $lblSub.ForeColor = $ColorMuted
 $lblSub.AutoSize = $true
 $lblSub.Location = New-Object System.Drawing.Point(2, 34)
 $pnlHeader = New-Object System.Windows.Forms.Panel
-$pnlHeader.Dock = "Top"
-$pnlHeader.Height = [int](58 * $Dpi)
+$pnlHeader.Dock = "Fill"
 $pnlHeader.Controls.AddRange(@($lblTitle, $lblSub))
 
-# Порядок добавления важен для Dock: Fill первым, затем Bottom'ы, Top последним.
-$form.Controls.Add($tabs)
-$form.Controls.Add($grpLog)
-$form.Controls.Add($pnlButtons)
-$form.Controls.Add($pnlHeader)
+# Жёсткая сетка: заголовок / вкладки (тянутся) / журнал / кнопки — кнопки всегда видны внизу.
+$root = New-Object System.Windows.Forms.TableLayoutPanel
+$root.Dock = "Fill"
+$root.ColumnCount = 1
+$root.RowCount = 4
+[void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle("Percent", 100)))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Absolute", [int](58 * $Dpi))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 100)))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Absolute", [int](140 * $Dpi))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Absolute", [int](54 * $Dpi))))
+$root.Controls.Add($pnlHeader, 0, 0)
+$root.Controls.Add($tabs, 0, 1)
+$root.Controls.Add($grpLog, 0, 2)
+$root.Controls.Add($pnlButtons, 0, 3)
+$form.Controls.Add($root)
 
 Refresh-StartupList
 Write-Log "WinGameOptimizer запущен. Backup-папка: $BackupRoot"
