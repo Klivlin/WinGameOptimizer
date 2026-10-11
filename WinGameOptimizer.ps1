@@ -125,12 +125,17 @@ function Backup-CurrentState {
 }
 
 function Get-LastBackupDir {
+    Get-BackupDirs | Select-Object -First 1 -ExpandProperty FullName
+}
+
+function Get-BackupDirs {
     Get-ChildItem $BackupRoot -Directory -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+        Where-Object { $_.Name -match '^\d{8}_\d{6}$' } | Sort-Object Name -Descending
 }
 
 function Restore-FromBackup {
-    $dir = Get-LastBackupDir
+    param([string]$Dir)
+    $dir = if ($Dir) { $Dir } else { Get-LastBackupDir }
     if (-not $dir) {
         Write-Log "Бэкапов не найдено." "WARN"
         return
@@ -330,21 +335,23 @@ function Opt-BackgroundServices {
     }
 }
 
+$ScheduledTasksBloatList = @(
+    "\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser",
+    "\Microsoft\Windows\Application Experience\ProgramDataUpdater",
+    "\Microsoft\Windows\Autochk\Proxy",
+    "\Microsoft\Windows\Customer Experience Improvement Program\Consolidator",
+    "\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip",
+    "\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector",
+    "\Microsoft\Windows\Feedback\Siuf\DmClient",
+    "\Microsoft\Windows\Feedback\Siuf\DmClientOnScenarioDownload",
+    "\Microsoft\Windows\Maps\MapsToastTask",
+    "\Microsoft\Windows\Maps\MapsUpdateTask",
+    "\Microsoft\Windows\Windows Error Reporting\QueueReporting"
+)
+
 function Opt-DisableScheduledTasksBloat {
     Write-Log "Отключение фоновых задач планировщика (телеметрия, отзывы, обновление карт)..."
-    $tasks = @(
-        "\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser",
-        "\Microsoft\Windows\Application Experience\ProgramDataUpdater",
-        "\Microsoft\Windows\Autochk\Proxy",
-        "\Microsoft\Windows\Customer Experience Improvement Program\Consolidator",
-        "\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip",
-        "\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector",
-        "\Microsoft\Windows\Feedback\Siuf\DmClient",
-        "\Microsoft\Windows\Feedback\Siuf\DmClientOnScenarioDownload",
-        "\Microsoft\Windows\Maps\MapsToastTask",
-        "\Microsoft\Windows\Maps\MapsUpdateTask",
-        "\Microsoft\Windows\Windows Error Reporting\QueueReporting"
-    )
+    $tasks = $ScheduledTasksBloatList
     foreach ($t in $tasks) {
         try {
             Disable-ScheduledTask -TaskPath (Split-Path $t) -TaskName (Split-Path $t -Leaf) -ErrorAction Stop | Out-Null
@@ -759,6 +766,122 @@ function Stop-ProcessBoost {
 }
 
 # ---------------------------------------------------------------------------
+# 3. Определение уже применённых оптимизаций
+# ---------------------------------------------------------------------------
+function Get-RegVal {
+    param([string]$Path, [string]$Name)
+    try { return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name } catch { return $null }
+}
+
+function Get-PowerSettingAc {
+    param([string]$SubGuid, [string]$SettingGuid)
+    try {
+        $out = powercfg /query scheme_current $SubGuid $SettingGuid 2>$null | Out-String
+        $m = [regex]::Matches($out, '0x[0-9a-fA-F]{8}')
+        if ($m.Count -ge 2) { return [Convert]::ToInt64($m[$m.Count - 2].Value.Substring(2), 16) }
+    } catch { }
+    return $null
+}
+
+function Test-OptionApplied {
+    param([string]$Key)
+    try {
+        switch ($Key) {
+            "UltimatePower" {
+                $active = (powercfg /getactivescheme | Out-String)
+                if (Test-IsX3D) { return ($active -match "381b4222-f694-41f0-9685-ff5bb260df2e") }
+                return ($active -match "Ultimate|Максимальная производительность")
+            }
+            "UsbSuspend"  { return ((Get-PowerSettingAc "2a737441-1930-4402-8d77-b2bebba308a3" "48e6b7a6-50f5-4782-a5d4-53bb8f07e226") -eq 0) }
+            "CoreParking" { if (Test-IsX3D) { return $false }; return ((Get-PowerSettingAc "54533251-82be-4824-96c1-47b60b740d00" "0cc5b647-c1df-4637-891a-dec35c318583") -eq 100) }
+            "HAGS"        { return ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "HwSchMode") -eq 2) }
+            "GameDVR"     {
+                if (Test-IsDualCcdX3D) { return $false }
+                return (((Get-RegVal "HKCU:\System\GameConfigStore" "GameDVR_Enabled") -eq 0) -and ((Get-RegVal "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR") -eq 0))
+            }
+            "MMCSS"       {
+                $path = "HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games"
+                return (((Get-RegVal $path "Priority") -eq 6) -and ((Get-RegVal $path "Scheduling Category") -eq "High"))
+            }
+            "VisualFx"    { return ((Get-RegVal "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" "VisualFXSetting") -eq 2) }
+            "NetThrottle" {
+                $v = Get-RegVal "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" "NetworkThrottlingIndex"
+                return ($null -ne $v -and (([int64]$v -band 4294967295) -eq 4294967295))
+            }
+            "Nagle"       {
+                $root = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+                $ifs = @(Get-ChildItem $root -ErrorAction Stop)
+                if ($ifs.Count -eq 0) { return $false }
+                foreach ($i in $ifs) { if ((Get-RegVal $i.PSPath "TCPNoDelay") -ne 1) { return $false } }
+                return $true
+            }
+            "BgServices"  {
+                $found = 0
+                foreach ($n in $BackgroundServicesList) {
+                    $svc = Get-Service -Name $n -ErrorAction SilentlyContinue
+                    if ($svc) { $found++; if ($svc.StartType -ne "Disabled") { return $false } }
+                }
+                return ($found -gt 0)
+            }
+            "BgTasks"     {
+                $found = 0
+                foreach ($t in $ScheduledTasksBloatList) {
+                    $task = Get-ScheduledTask -TaskPath ((Split-Path $t) + "\") -TaskName (Split-Path $t -Leaf) -ErrorAction SilentlyContinue
+                    if ($task) { $found++; if ($task.State -ne "Disabled") { return $false } }
+                }
+                return ($found -gt 0)
+            }
+            "BgApps"      { return ((Get-RegVal "HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" "GlobalUserDisabled") -eq 1) }
+            "NicPower"    {
+                $ads = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq "Up" })
+                if ($ads.Count -eq 0) { return $false }
+                foreach ($a in $ads) {
+                    $pm = Get-NetAdapterPowerManagement -Name $a.Name -ErrorAction Stop
+                    if ($pm.AllowComputerToTurnOffDevice -ne "Disabled") { return $false }
+                }
+                return $true
+            }
+            "Hibernation" { return ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Control\Power" "HibernateEnabled") -eq 0) }
+            "PrioSep"     { return ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" "Win32PrioritySeparation") -eq 18) }
+            "MouseAccel"  {
+                $k = "HKCU:\Control Panel\Mouse"
+                return (((Get-RegVal $k "MouseSpeed") -eq "0") -and ((Get-RegVal $k "MouseThreshold1") -eq "0") -and ((Get-RegVal $k "MouseThreshold2") -eq "0"))
+            }
+            "InputQueue"  {
+                return (((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Services\mouclass\Parameters" "MouseDataQueueSize") -eq 20) -and
+                        ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters" "KeyboardDataQueueSize") -eq 20))
+            }
+            "HidPower"    {
+                $devs = @(Get-InputHidDevices)
+                $checked = 0
+                foreach ($d in $devs) {
+                    $rp = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.InstanceId)\Device Parameters"
+                    if (Test-Path $rp) { $checked++; if ((Get-RegVal $rp "EnhancedPowerManagementEnabled") -ne 0) { return $false } }
+                }
+                return ($checked -gt 0)
+            }
+            "MsiMode"     {
+                $devs = @(Get-InputHidDevices)
+                if ($devs.Count -eq 0) { return $false }
+                foreach ($d in $devs) {
+                    if ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.InstanceId)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties" "MSISupported") -ne 1) { return $false }
+                }
+                return $true
+            }
+            "Defender"    {
+                return (((Get-RegVal "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" "DisableAntiSpyware") -eq 1) -or
+                        ((Get-RegVal "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" "DisableRealtimeMonitoring") -eq 1))
+            }
+            "Mitigations" {
+                return (((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverride") -eq 3) -and
+                        ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" "FeatureSettingsOverrideMask") -eq 3))
+            }
+            default       { return $false }
+        }
+    } catch { return $false }
+}
+
+# ---------------------------------------------------------------------------
 # 4. GUI
 # ---------------------------------------------------------------------------
 try {
@@ -782,7 +905,7 @@ $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $formW = [Math]::Min([int](900 * $Dpi), [int]($wa.Width * 0.95))
 $formH = [Math]::Min([int](780 * $Dpi), [int]($wa.Height * 0.90))
 $form.ClientSize = New-Object System.Drawing.Size($formW, $formH)
-$form.MinimumSize = New-Object System.Drawing.Size([Math]::Min([int](760 * $Dpi), $formW), [Math]::Min([int](560 * $Dpi), $formH))
+$form.MinimumSize = New-Object System.Drawing.Size([Math]::Min([int](820 * $Dpi), $formW), [Math]::Min([int](560 * $Dpi), $formH))
 $form.StartPosition = "CenterScreen"
 $form.Padding = New-Object System.Windows.Forms.Padding(10)
 
@@ -792,6 +915,7 @@ $tabs.Font = $UiFont
 $tabs.Padding = New-Object System.Drawing.Point(14, 5)
 
 $checkboxes = @{}
+$optMeta = @{}
 
 function New-StyledButton {
     param([string]$Text, [int]$Width = 160, [bool]$Primary = $false)
@@ -853,15 +977,43 @@ function Add-OptCheckbox {
     $cb.Margin = New-Object System.Windows.Forms.Padding(2, 6, 2, 0)
     $Page.Controls.Add($cb)
     $checkboxes[$Key] = $cb
-    if ($Desc) {
-        $d = New-Object System.Windows.Forms.Label
-        $d.AutoSize = $true
-        $d.MaximumSize = New-Object System.Drawing.Size(($WrapWidth - 24), 0)
-        $d.Text = $Desc
-        $d.ForeColor = if ($Risky) { $ColorRisk } else { $ColorMuted }
-        $d.Margin = New-Object System.Windows.Forms.Padding(24, 0, 2, 4)
-        $Page.Controls.Add($d)
+    $d = New-Object System.Windows.Forms.Label
+    $d.AutoSize = $true
+    $d.MaximumSize = New-Object System.Drawing.Size(($WrapWidth - 24), 0)
+    $d.Text = $Desc
+    $d.ForeColor = if ($Risky) { $ColorRisk } else { $ColorMuted }
+    $d.Margin = New-Object System.Windows.Forms.Padding(24, 0, 2, 4)
+    if (-not $Desc) { $d.Visible = $false }
+    $Page.Controls.Add($d)
+    $optMeta[$Key] = @{ Desc = $d; BaseDesc = $Desc; DefaultChecked = $Checked; Risky = $Risky; BaseLabel = $Label }
+}
+
+# Помечает уже применённые пункты (снимает галочку и блокирует), возвращает остальные в исходное состояние.
+function Refresh-OptionStates {
+    $applied = 0
+    foreach ($key in @($checkboxes.Keys)) {
+        $cb = $checkboxes[$key]
+        $meta = $optMeta[$key]
+        $isApplied = Test-OptionApplied -Key $key
+        if ($isApplied) {
+            $applied++
+            $cb.Checked = $false
+            $cb.Enabled = $false
+            $cb.Text = "✔ " + $meta.BaseLabel
+            $meta.Desc.Visible = $true
+            $meta.Desc.ForeColor = $ColorAccent
+            $meta.Desc.Text = "Уже применено — повторно не выполняется." + $(if ($meta.BaseDesc) { " " + $meta.BaseDesc } else { "" })
+        } else {
+            if (-not $cb.Enabled) { $cb.Checked = $meta.DefaultChecked }
+            $cb.Enabled = $true
+            $cb.Text = $meta.BaseLabel
+            $meta.Desc.ForeColor = if ($meta.Risky) { $ColorRisk } else { $ColorMuted }
+            $meta.Desc.Text = $meta.BaseDesc
+            $meta.Desc.Visible = [bool]$meta.BaseDesc
+        }
     }
+    if ($Global:LblStatus) { $Global:LblStatus.Text = "Уже применено пунктов: $applied из $($checkboxes.Count)" }
+    Write-Log "Статусы обновлены: применено $applied из $($checkboxes.Count) пунктов."
 }
 
 # Вкладка со списком (CheckedListBox) + строка кнопок снизу + заголовок сверху.
@@ -1075,16 +1227,74 @@ $grpLog.Controls.Add($Global:LogBox)
 $btnBackup = New-StyledButton "Создать бэкап" 140
 $btnBackup.Add_Click({ Backup-CurrentState | Out-Null })
 
-$btnRestore = New-StyledButton "Восстановить из бэкапа" 190
+function Select-BackupDir {
+    $dirs = @(Get-BackupDirs)
+    if ($dirs.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Бэкапов не найдено в $BackupRoot.", "Восстановление") | Out-Null
+        return $null
+    }
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Выбор бэкапа"
+    $dlg.Font = $UiFont
+    $dlg.StartPosition = "CenterParent"
+    $dlg.ClientSize = New-Object System.Drawing.Size([int](520 * $Dpi), [int](380 * $Dpi))
+    $dlg.FormBorderStyle = "FixedDialog"
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "Выберите бэкап для восстановления. Самый старый обычно содержит исходное состояние системы до оптимизаций."
+    $lbl.Dock = "Top"
+    $lbl.Height = [int](48 * $Dpi)
+    $lbl.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 0)
+    $lst = New-Object System.Windows.Forms.ListBox
+    $lst.Dock = "Fill"
+    $oldest = $dirs[$dirs.Count - 1].Name
+    foreach ($d in $dirs) {
+        $dt = [datetime]::ParseExact($d.Name, "yyyyMMdd_HHmmss", $null)
+        $mark = if ($d.Name -eq $oldest -and $dirs.Count -gt 1) { "   (самый старый — исходное состояние)" } else { "" }
+        $lst.Items.Add($dt.ToString("yyyy-MM-dd HH:mm:ss") + $mark) | Out-Null
+    }
+    $lst.SelectedIndex = 0
+    $pnl = New-Object System.Windows.Forms.FlowLayoutPanel
+    $pnl.Dock = "Bottom"
+    $pnl.Height = [int](48 * $Dpi)
+    $pnl.FlowDirection = "RightToLeft"
+    $pnl.Padding = New-Object System.Windows.Forms.Padding(8)
+    $bCancel = New-StyledButton "Отмена" 100
+    $bCancel.DialogResult = "Cancel"
+    $bOk = New-StyledButton "Восстановить" 140 $true
+    $bOk.DialogResult = "OK"
+    $pnl.Controls.AddRange(@($bCancel, $bOk))
+    $dlg.AcceptButton = $bOk
+    $dlg.CancelButton = $bCancel
+    $dlg.Controls.Add($lst)
+    $dlg.Controls.Add($pnl)
+    $dlg.Controls.Add($lbl)
+    $result = $dlg.ShowDialog($form)
+    $picked = $null
+    if ($result -eq "OK" -and $lst.SelectedIndex -ge 0) { $picked = $dirs[$lst.SelectedIndex].FullName }
+    $dlg.Dispose()
+    return $picked
+}
+
+$btnRestore = New-StyledButton "Восстановить из бэкапа…" 210
 $btnRestore.Add_Click({
+    $picked = Select-BackupDir
+    if (-not $picked) { return }
     $confirm = [System.Windows.Forms.MessageBox]::Show(
-        "Восстановить последний сохранённый бэкап настроек?", "Подтверждение", "YesNo", "Question")
-    if ($confirm -eq "Yes") { Restore-FromBackup }
+        "Восстановить настройки из бэкапа:`r`n$picked ?", "Подтверждение", "YesNo", "Question")
+    if ($confirm -eq "Yes") { Restore-FromBackup -Dir $picked; Refresh-OptionStates }
 })
 
 $btnApply = New-StyledButton "Применить выбранное" 200 $true
 $btnApply.Margin = New-Object System.Windows.Forms.Padding(8, 4, 0, 4)
 $btnApply.Add_Click({
+    $anyChecked = $false
+    foreach ($c in $checkboxes.Values) { if ($c.Checked -and $c.Enabled) { $anyChecked = $true; break } }
+    if (-not $anyChecked) {
+        [System.Windows.Forms.MessageBox]::Show("Нечего применять: все отмеченные пункты уже применены или ничего не выбрано.", "WinGameOptimizer") | Out-Null
+        return
+    }
     $backupDir = Backup-CurrentState
     Write-Log "=== Применение выбранных оптимизаций ==="
 
@@ -1142,6 +1352,7 @@ $btnApply.Add_Click({
         else { Write-Log "Отключение mitigations пропущено пользователем." }
     }
 
+    Refresh-OptionStates
     Write-Log "=== Готово. Некоторые изменения требуют перезагрузки. ==="
     [System.Windows.Forms.MessageBox]::Show("Оптимизации применены. Рекомендуется перезагрузка компьютера.`r`nБэкап: $backupDir", "WinGameOptimizer") | Out-Null
 })
@@ -1182,7 +1393,12 @@ $lblSub.AutoSize = $true
 $lblSub.Location = New-Object System.Drawing.Point(2, 34)
 $pnlHeader = New-Object System.Windows.Forms.Panel
 $pnlHeader.Dock = "Fill"
-$pnlHeader.Controls.AddRange(@($lblTitle, $lblSub))
+$Global:LblStatus = New-Object System.Windows.Forms.Label
+$Global:LblStatus.ForeColor = $ColorAccent
+$Global:LblStatus.AutoSize = $true
+$Global:LblStatus.Anchor = "Top, Right"
+$Global:LblStatus.Location = New-Object System.Drawing.Point(([int](640 * $Dpi)), 6)
+$pnlHeader.Controls.AddRange(@($lblTitle, $lblSub, $Global:LblStatus))
 
 # Жёсткая сетка: заголовок / вкладки (тянутся) / журнал / кнопки — кнопки всегда видны внизу.
 $root = New-Object System.Windows.Forms.TableLayoutPanel
@@ -1201,6 +1417,7 @@ $root.Controls.Add($pnlButtons, 0, 3)
 $form.Controls.Add($root)
 
 Refresh-StartupList
+Refresh-OptionStates
 Write-Log "WinGameOptimizer запущен. Backup-папка: $BackupRoot"
 Write-Log "Реальный эффект: снижение фоновой нагрузки/задержки и более стабильный frame-time."
 Write-Log "На GPU-bound сценариях прирост FPS от софт-твиков обычно умеренный (единицы-десятки %)."

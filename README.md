@@ -146,8 +146,10 @@ Select a game (Valorant / CS2 / CS:GO / Dota 2) and start a background process m
   **Create backup** — snapshot of the current power scheme, affected registry branches and service states.
 - **Применить выбранное** — автоматически создаёт бэкап перед применением.
   **Apply selected** — automatically creates a backup before applying.
-- **Восстановить из бэкапа** — откатывает схему питания, реестр, службы, автозагрузку и настройки устройств ввода из последнего бэкапа.
-  **Restore from backup** — rolls back power scheme, registry, services, startup items and input-device settings from the latest backup.
+- **Восстановить из бэкапа…** — открывает список созданных бэкапов (по дате); выберите нужный, и скрипт откатит схему питания, реестр, службы, автозагрузку и настройки устройств ввода. Самый старый бэкап обычно хранит исходное состояние до оптимизаций.
+  **Restore from backup…** — shows the list of created backups (by date); pick one to roll back power scheme, registry, services, startup items and input-device settings. The oldest backup usually holds the original pre-tweak state.
+- **Проверка уже применённого** — при запуске и после применения/восстановления скрипт проверяет текущее состояние системы. Применённые пункты помечаются «✔», блокируются и не выполняются повторно (в шапке — счётчик «применено N из M»). Не определяются автоматически: очистка temp, сброс DNS/Winsock, привязка IRQ.
+  **Already-applied check** — on start and after apply/restore the script checks the real system state. Applied options are marked «✔», disabled and not run again. Not auto-detected: temp cleanup, DNS/Winsock reset, IRQ affinity.
 - Отдельная кнопка восстановления для автозагрузки (вкладка «Автозагрузка») и для устройств ввода (вкладка «Мышь / Инпут-лаг»).
   Separate restore buttons exist for startup items (Startup tab) and input devices (Mouse/Input-lag tab).
 
