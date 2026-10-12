@@ -945,6 +945,146 @@ function Test-OptionApplied {
 }
 
 # ---------------------------------------------------------------------------
+# 3b. Сброс отдельных пунктов к значениям Windows по умолчанию
+# ---------------------------------------------------------------------------
+function Remove-RegValueSafe {
+    param([string]$Path, [string[]]$Names)
+    foreach ($n in $Names) {
+        try {
+            if (Test-Path $Path) {
+                Remove-ItemProperty -Path $Path -Name $n -ErrorAction SilentlyContinue
+                Write-Log "DEL  $Path\$n"
+            }
+        } catch { Write-Log "Не удалось удалить $Path\$n : $($_.Exception.Message)" "WARN" }
+    }
+}
+
+# Штатные режимы запуска служб из списка Opt-BackgroundServices
+$ServiceDefaults = @{
+    "SysMain"          = "delayed-auto"
+    "WSearch"          = "delayed-auto"
+    "DiagTrack"        = "auto"
+    "dmwappushservice" = "demand"
+    "MapsBroker"       = "delayed-auto"
+    "lfsvc"            = "demand"
+    "RetailDemo"       = "demand"
+    "WerSvc"           = "demand"
+}
+
+# Ключи, для которых есть кнопка сброса (ClearTemp и DnsWinsock — разовые действия, сбрасывать нечего)
+$ResetSupportedKeys = @("UltimatePower","UsbSuspend","CoreParking","HAGS","GameDVR","MMCSS","VisualFx","NetThrottle","Nagle",
+    "BgServices","BgTasks","BgApps","NicPower","Hibernation","PrioSep","MouseAccel","InputQueue","HidPower","IrqAffinity",
+    "MsiMode","Defender","Mitigations")
+
+function Reset-Option {
+    param([string]$Key)
+    switch ($Key) {
+        { $_ -in @("UltimatePower","UsbSuspend","CoreParking") } {
+            Write-Log "Сброс схем питания к заводским (powercfg /restoredefaultschemes)..."
+            powercfg /restoredefaultschemes | Out-Null
+            powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e | Out-Null
+            Write-Log "Схемы питания сброшены, активна «Сбалансированная». Копии Ultimate Performance удалены."
+        }
+        "HAGS" {
+            Remove-RegValueSafe "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" @("HwSchMode")
+            Write-Log "HAGS возвращён к поведению Windows/драйвера по умолчанию. Нужна перезагрузка." "WARN"
+        }
+        "GameDVR" {
+            Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 1
+            Remove-RegValueSafe "HKCU:\System\GameConfigStore" @("GameDVR_FSEBehaviorMode")
+            Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" @("AllowGameDVR")
+        }
+        "MMCSS" {
+            Remove-RegValueSafe "HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" @("GPU Priority","Priority","Scheduling Category","SFIO Priority")
+        }
+        "VisualFx" {
+            Set-RegistryValue -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 0
+            Set-RegistryValue -Path "HKCU:\Control Panel\Desktop" -Name "DragFullWindows" -Value "1" -Type String
+            Set-RegistryValue -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value "1" -Type String
+            Write-Log "Визуальные эффекты возвращены; применятся после перелогина." "WARN"
+        }
+        "NetThrottle" {
+            Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 10
+        }
+        "Nagle" {
+            $root = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+            if (Test-Path $root) {
+                Get-ChildItem $root | ForEach-Object { Remove-RegValueSafe $_.PSPath @("TcpAckFrequency","TCPNoDelay") }
+            }
+        }
+        "BgServices" {
+            foreach ($name in $ServiceDefaults.Keys) {
+                if (Get-Service -Name $name -ErrorAction SilentlyContinue) {
+                    sc.exe config $name start= $ServiceDefaults[$name] | Out-Null
+                    if ($ServiceDefaults[$name] -ne "demand") { Start-Service -Name $name -ErrorAction SilentlyContinue }
+                    Write-Log "Служба $name: режим запуска $($ServiceDefaults[$name])."
+                }
+            }
+        }
+        "BgTasks" {
+            foreach ($t in $ScheduledTasksBloatList) {
+                try {
+                    Enable-ScheduledTask -TaskPath ((Split-Path $t) + "\") -TaskName (Split-Path $t -Leaf) -ErrorAction Stop | Out-Null
+                    Write-Log "Задача включена: $t"
+                } catch { Write-Log "Пропущена задача (не найдена/нет доступа): $t" "WARN" }
+            }
+        }
+        "BgApps" {
+            Set-RegistryValue -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" -Name "GlobalUserDisabled" -Value 0
+        }
+        "NicPower" {
+            try {
+                Get-NetAdapter -Physical -ErrorAction Stop | ForEach-Object {
+                    try { Enable-NetAdapterPowerManagement -Name $_.Name -ErrorAction Stop; Write-Log "Power management включён: $($_.Name)" }
+                    catch { Write-Log "Не удалось включить power management для $($_.Name): $($_.Exception.Message)" "WARN" }
+                }
+            } catch { Write-Log "Get-NetAdapter недоступен: $($_.Exception.Message)" "WARN" }
+        }
+        "Hibernation" { Opt-EnableHibernation }
+        "PrioSep" {
+            Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 2
+        }
+        "MouseAccel" {
+            Set-RegistryValue -Path "HKCU:\Control Panel\Mouse" -Name "MouseSpeed" -Value "1" -Type String
+            Set-RegistryValue -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold1" -Value "6" -Type String
+            Set-RegistryValue -Path "HKCU:\Control Panel\Mouse" -Name "MouseThreshold2" -Value "10" -Type String
+            Write-Log "Акселерация мыши возвращена; применится после перелогина." "WARN"
+        }
+        "InputQueue" {
+            Remove-RegValueSafe "HKLM:\SYSTEM\CurrentControlSet\Services\mouclass\Parameters" @("MouseDataQueueSize")
+            Remove-RegValueSafe "HKLM:\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters" @("KeyboardDataQueueSize")
+            Write-Log "Нужна перезагрузка." "WARN"
+        }
+        "HidPower" {
+            foreach ($dev in (Get-InputHidDevices)) {
+                $rp = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($dev.InstanceId)\Device Parameters"
+                if (Test-Path $rp) { Set-RegistryValue -Path $rp -Name "EnhancedPowerManagementEnabled" -Value 1 }
+            }
+        }
+        "IrqAffinity" {
+            foreach ($dev in (Get-InputHidDevices)) {
+                $affPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($dev.InstanceId)\Device Parameters\Interrupt Management\Affinity Policy"
+                if (Test-Path $affPath) { Remove-Item -Path $affPath -Recurse -Force -ErrorAction SilentlyContinue; Write-Log "Affinity Policy удалён: $($dev.FriendlyName)" }
+            }
+            Write-Log "Нужна перезагрузка." "WARN"
+        }
+        "MsiMode" {
+            foreach ($dev in (Get-InputHidDevices)) {
+                $msiPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($dev.InstanceId)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"
+                Remove-RegValueSafe $msiPath @("MSISupported")
+            }
+            Write-Log "Нужна перезагрузка. Если устройство работает некорректно — используйте «Восстановить настройки устройств ввода»." "WARN"
+        }
+        "Defender"    { Restore-Defender }
+        "Mitigations" {
+            Remove-RegValueSafe "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" @("FeatureSettingsOverride","FeatureSettingsOverrideMask")
+            Write-Log "Mitigations возвращены к умолчанию. Нужна перезагрузка." "WARN"
+        }
+        default { Write-Log "Для пункта $Key сброс не предусмотрен." "WARN" }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # 4. GUI
 # ---------------------------------------------------------------------------
 try {
@@ -1030,16 +1170,53 @@ function Add-OptNote {
 
 function Add-OptCheckbox {
     param($Page, [string]$Key, [string]$Label, [string]$Desc = "", [bool]$Checked = $true, [bool]$Risky = $false)
+    $row = New-Object System.Windows.Forms.TableLayoutPanel
+    $row.ColumnCount = 2
+    $row.RowCount = 1
+    $row.AutoSize = $true
+    $row.Width = $WrapWidth
+    $row.Margin = New-Object System.Windows.Forms.Padding(0)
+    [void]$row.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle("Percent", 100)))
+    [void]$row.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle("Absolute", [int](104 * $Dpi))))
+
     $cb = New-Object System.Windows.Forms.CheckBox
     $cb.AutoSize = $true
-    $cb.MaximumSize = New-Object System.Drawing.Size($WrapWidth, 0)
+    $cb.MaximumSize = New-Object System.Drawing.Size(($WrapWidth - [int](112 * $Dpi)), 0)
     $cb.Text = $Label
     $cb.Checked = $Checked
     $cb.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Regular)
     if ($Risky) { $cb.ForeColor = $ColorRisk }
     $cb.Margin = New-Object System.Windows.Forms.Padding(2, 6, 2, 0)
-    $Page.Controls.Add($cb)
+    $row.Controls.Add($cb, 0, 0)
+
+    if ($ResetSupportedKeys -contains $Key) {
+        $rb = New-Object System.Windows.Forms.Button
+        $rb.Text = "↺ Сброс"
+        $rb.Tag = $Key
+        $rb.Width = [int](96 * $Dpi)
+        $rb.Height = [int](26 * $Dpi)
+        $rb.FlatStyle = "Flat"
+        $rb.FlatAppearance.BorderColor = [System.Drawing.Color]::Silver
+        $rb.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $rb.Margin = New-Object System.Windows.Forms.Padding(0, 3, 0, 0)
+        $rb.Add_Click({
+            param($sender, $e)
+            $k = [string]$sender.Tag
+            $title = $optMeta[$k].BaseLabel
+            $extra = if ($k -in @("UltimatePower","UsbSuspend","CoreParking")) { "`r`n`r`nБудут сброшены ВСЕ схемы питания к заводским." } else { "" }
+            $confirm = [System.Windows.Forms.MessageBox]::Show(
+                "Вернуть «$title» к значениям Windows по умолчанию?$extra", "Сброс пункта", "YesNo", "Question")
+            if ($confirm -eq "Yes") {
+                Write-Log "=== Сброс пункта: $title ==="
+                Reset-Option -Key $k
+                Refresh-OptionStates
+            }
+        })
+        $row.Controls.Add($rb, 1, 0)
+    }
+    $Page.Controls.Add($row)
     $checkboxes[$Key] = $cb
+
     $d = New-Object System.Windows.Forms.Label
     $d.AutoSize = $true
     $d.MaximumSize = New-Object System.Drawing.Size(($WrapWidth - 24), 0)
