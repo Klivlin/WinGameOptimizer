@@ -118,10 +118,10 @@ A checklist of preinstalled UWP apps (3D Builder, Skype, Solitaire, Feedback Hub
 **Важно / Important:** Windows не поддерживает автоматический откат удаления приложений — список удалённого сохраняется в лог-файл, восстановление только переустановкой из Microsoft Store.
 Windows has no built-in rollback for app removal — removed package names are logged to a file; restoring means reinstalling from the Microsoft Store.
 
-### 9. Вкладка «Профиль игры» / Game profile tab
-Выбор игры (Valorant / CS2 / CS:GO / Dota 2) и запуск фонового мониторинга процесса: при обнаружении игрового .exe ему автоматически выставляется приоритет `High` и affinity на все логические ядра. Анти-чит процессы не трогаются.
+### 9. Вкладка «Приоритеты процессов» / Process priorities tab
+Свой список процессов с приоритетом: имя процесса (без `.exe`, можно выбрать из запущенных), приоритет (Idle / Ниже обычного / Обычный / Выше обычного / High) и опционально affinity на все ядра. Есть быстрые пресеты игр (Valorant, CS2, CS:GO, Dota 2). Мониторинг (кнопка «Запустить мониторинг», проверка каждые 3 с) применяет правила к найденным процессам. Список сохраняется в `%APPDATA%\WinGameOptimizer\process_rules.json`. Приоритет Realtime не предлагается, античит-процессы (vgc, EasyAntiCheat, BattlEye, FACEIT и др.) и критичные системные процессы добавить нельзя.
 
-Select a game (Valorant / CS2 / CS:GO / Dota 2) and start a background process monitor: when the game's .exe is detected, it automatically gets `High` priority and affinity across all logical cores. Anti-cheat processes are left untouched.
+Your own process list with a priority: process name (without `.exe`, can be picked from running ones), priority (Idle / BelowNormal / Normal / AboveNormal / High) and optional all-cores affinity. Quick game presets are included. The monitor (checked every 3 s) applies the rules to matching processes. The list is stored in `%APPDATA%\WinGameOptimizer\process_rules.json`. Realtime is not offered; anti-cheat and critical system processes cannot be added.
 
 ---
 

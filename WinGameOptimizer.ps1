@@ -725,35 +725,98 @@ $GameProfiles = @{
 }
 
 $Global:BoostTimer = $null
+$Global:ProcessRules = New-Object System.Collections.ArrayList
+$Global:BoostSeen = @{}
+$ProcessRulesFile = Join-Path $env:APPDATA "WinGameOptimizer\process_rules.json"
 
-function Start-ProcessBoost {
-    param([string]$ProcessName)
+# Процессы, которым нельзя менять приоритет: античиты и критичные системные.
+$ProtectedProcessPatterns = @(
+    "^vgc$", "^vgtray$", "^vanguard", "^easyanticheat", "^eac", "^beservice", "^battleye", "^faceit", "^esea", "^cs2-anticheat",
+    "^system$", "^idle$", "^smss$", "^csrss$", "^wininit$", "^winlogon$", "^services$", "^lsass$", "^lsm$", "^svchost$",
+    "^msmpeng$", "^nissrv$", "^securityhealth", "^explorer$", "^dwm$", "^fontdrvhost$", "^registry$", "^memory compression$"
+)
 
-    if ($Global:BoostTimer) { $Global:BoostTimer.Stop(); $Global:BoostTimer.Dispose() }
+$PriorityChoices = [ordered]@{
+    "Самый низкий (Idle)"      = "Idle"
+    "Ниже обычного"            = "BelowNormal"
+    "Обычный"                  = "Normal"
+    "Выше обычного"            = "AboveNormal"
+    "Высокий (High)"           = "High"
+}
 
-    $Global:BoostTimer = New-Object System.Windows.Forms.Timer
-    $Global:BoostTimer.Interval = 3000
-    $Global:BoostTimer.Add_Tick({
+function Test-ProtectedProcess {
+    param([string]$Name)
+    foreach ($pat in $ProtectedProcessPatterns) { if ($Name -match $pat) { return $true } }
+    return $false
+}
+
+function Save-ProcessRules {
+    try {
+        $dir = Split-Path $ProcessRulesFile
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $arr = @($Global:ProcessRules | ForEach-Object { [PSCustomObject]@{ Name = $_.Name; Priority = $_.Priority; AllCores = [bool]$_.AllCores } })
+        ConvertTo-Json -InputObject $arr -Depth 3 | Set-Content -Path $ProcessRulesFile -Encoding UTF8
+    } catch {
+        Write-Log "Не удалось сохранить список процессов: $($_.Exception.Message)" "WARN"
+    }
+}
+
+function Load-ProcessRules {
+    $Global:ProcessRules.Clear()
+    if (-not (Test-Path $ProcessRulesFile)) { return }
+    try {
+        $data = @(Get-Content -Path $ProcessRulesFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+        foreach ($r in $data) {
+            if ($r.Name -and $r.Priority -and -not (Test-ProtectedProcess $r.Name)) {
+                [void]$Global:ProcessRules.Add([PSCustomObject]@{ Name = [string]$r.Name; Priority = [string]$r.Priority; AllCores = [bool]$r.AllCores })
+            }
+        }
+    } catch {
+        Write-Log "Не удалось прочитать список процессов: $($_.Exception.Message)" "WARN"
+    }
+}
+
+function Invoke-ProcessRules {
+    foreach ($rule in @($Global:ProcessRules)) {
         try {
-            $proc = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue
-            if ($proc) {
-                foreach ($p in $proc) {
-                    if ($p.PriorityClass -ne [System.Diagnostics.ProcessPriorityClass]::High) {
-                        $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High
-                        $coreCount = [Environment]::ProcessorCount
-                        if ($coreCount -gt 2) {
-                            $p.ProcessorAffinity = [IntPtr]([math]::Pow(2, $coreCount) - 1)
-                        }
-                        Write-Log "Повышен приоритет процесса $($p.ProcessName) (PID $($p.Id)) -> High"
+            $procs = Get-Process -Name $rule.Name -ErrorAction SilentlyContinue
+            foreach ($p in $procs) {
+                $want = [System.Diagnostics.ProcessPriorityClass]$rule.Priority
+                $changed = $false
+                if ($p.PriorityClass -ne $want) { $p.PriorityClass = $want; $changed = $true }
+                if ($rule.AllCores) {
+                    $coreCount = [Environment]::ProcessorCount
+                    if ($coreCount -gt 2 -and $coreCount -lt 64) {
+                        $mask = [IntPtr]([int64]([math]::Pow(2, $coreCount) - 1))
+                        if ($p.ProcessorAffinity -ne $mask) { $p.ProcessorAffinity = $mask; $changed = $true }
                     }
+                }
+                $seenKey = "$($p.Id)|$($rule.Priority)"
+                if ($changed -or -not $Global:BoostSeen.ContainsKey($seenKey)) {
+                    $Global:BoostSeen[$seenKey] = $true
+                    Write-Log "Процесс $($p.ProcessName) (PID $($p.Id)) -> приоритет $($rule.Priority)"
                 }
             }
         } catch {
-            # процесс может завершиться между проверками — это нормально
+            # процесс мог завершиться или быть недоступен (нет прав) — это нормально
         }
-    })
+    }
+}
+
+function Start-ProcessBoost {
+    if ($Global:ProcessRules.Count -eq 0) {
+        Write-Log "Список процессов пуст — добавьте хотя бы один процесс." "WARN"
+        return $false
+    }
+    if ($Global:BoostTimer) { $Global:BoostTimer.Stop(); $Global:BoostTimer.Dispose() }
+    $Global:BoostSeen = @{}
+    $Global:BoostTimer = New-Object System.Windows.Forms.Timer
+    $Global:BoostTimer.Interval = 3000
+    $Global:BoostTimer.Add_Tick({ Invoke-ProcessRules })
     $Global:BoostTimer.Start()
-    Write-Log "Мониторинг процесса '$ProcessName' запущен (автоповышение приоритета)."
+    Invoke-ProcessRules
+    Write-Log "Мониторинг запущен: правил $($Global:ProcessRules.Count), проверка каждые 3 с."
+    return $true
 }
 
 function Stop-ProcessBoost {
@@ -1183,32 +1246,177 @@ $pgInput.Controls.Add($btnRestoreInput)
 Add-OptNote $pgInput ("IRQ affinity и MSI меняют низкоуровневые параметры драйверов. Перед применением создаётся бэкап затронутых веток реестра.`r`n" +
  "Если мышь/клавиатура перестанут отвечать — переподключите устройство или откатите кнопкой выше и перезагрузитесь.")
 
-# --- Профиль игры ---
-$pgGame = New-OptTab "Профиль игры"
-Add-OptNote $pgGame "Запустите мониторинг ПЕРЕД игрой: при обнаружении процесса ему будет выставлен приоритет High и affinity на все ядра. Анти-чит процессы (vgc.exe, cs2-anticheat и т.п.) не трогаются."
-$rowGame = New-Object System.Windows.Forms.FlowLayoutPanel
-$rowGame.AutoSize = $true
-$rowGame.FlowDirection = "LeftToRight"
-$lblGame = New-Object System.Windows.Forms.Label
-$lblGame.Text = "Игра:"
-$lblGame.AutoSize = $true
-$lblGame.Margin = New-Object System.Windows.Forms.Padding(0, 8, 6, 0)
-$comboGame = New-Object System.Windows.Forms.ComboBox
-$comboGame.Width = 220
-$comboGame.DropDownStyle = "DropDownList"
-$comboGame.Margin = New-Object System.Windows.Forms.Padding(0, 5, 12, 0)
-$GameProfiles.Keys | ForEach-Object { $comboGame.Items.Add($_) | Out-Null }
-$comboGame.SelectedIndex = 0
-$btnStartBoost = New-StyledButton "Запустить автоповышение приоритета" 260
-$btnStartBoost.Add_Click({
-    $gameName = $comboGame.SelectedItem.ToString()
-    $procName = $GameProfiles[$gameName]
-    Start-ProcessBoost -ProcessName $procName
+# --- Приоритеты процессов ---
+$pgGame = New-OptTab "Приоритеты процессов"
+Add-OptNote $pgGame "Список процессов, которым скрипт выставляет приоритет, пока работает мониторинг. Запустите мониторинг ПЕРЕД игрой. Имя процесса — без .exe (как в Диспетчере задач, колонка «Имя»). Античиты и критичные системные процессы добавить нельзя." $null
+Load-ProcessRules
+
+$lvRules = New-Object System.Windows.Forms.ListView
+$lvRules.View = "Details"
+$lvRules.FullRowSelect = $true
+$lvRules.GridLines = $true
+$lvRules.HideSelection = $false
+$lvRules.MultiSelect = $true
+$lvRules.Size = New-Object System.Drawing.Size($WrapWidth, [int](190 * $Dpi))
+[void]$lvRules.Columns.Add("Процесс", [int](300 * $Dpi))
+[void]$lvRules.Columns.Add("Приоритет", [int](200 * $Dpi))
+[void]$lvRules.Columns.Add("Affinity", [int](180 * $Dpi))
+
+function Get-PriorityLabel {
+    param([string]$Value)
+    foreach ($k in $PriorityChoices.Keys) { if ($PriorityChoices[$k] -eq $Value) { return $k } }
+    return $Value
+}
+
+function Refresh-RulesList {
+    $lvRules.Items.Clear()
+    foreach ($r in $Global:ProcessRules) {
+        $it = New-Object System.Windows.Forms.ListViewItem($r.Name)
+        [void]$it.SubItems.Add((Get-PriorityLabel $r.Priority))
+        [void]$it.SubItems.Add($(if ($r.AllCores) { "все ядра" } else { "не менять" }))
+        [void]$lvRules.Items.Add($it)
+    }
+}
+
+function Add-ProcessRule {
+    param([string]$Name, [string]$Priority, [bool]$AllCores)
+    $Name = ($Name.Trim() -replace '\.exe$', '')
+    if (-not $Name) { return }
+    if ($Name -notmatch '^[\w .\-+()]+$') {
+        [System.Windows.Forms.MessageBox]::Show("Недопустимое имя процесса: $Name", "Приоритеты") | Out-Null
+        return
+    }
+    if (Test-ProtectedProcess $Name) {
+        [System.Windows.Forms.MessageBox]::Show("Процесс '$Name' защищён (античит или системный) — менять его приоритет нельзя.", "Приоритеты", "OK", "Warning") | Out-Null
+        return
+    }
+    $existing = $Global:ProcessRules | Where-Object { $_.Name -ieq $Name } | Select-Object -First 1
+    if ($existing) { $existing.Priority = $Priority; $existing.AllCores = $AllCores }
+    else { [void]$Global:ProcessRules.Add([PSCustomObject]@{ Name = $Name; Priority = $Priority; AllCores = $AllCores }) }
+    Save-ProcessRules
+    Refresh-RulesList
+    Write-Log "Правило сохранено: $Name -> $Priority"
+}
+
+# Строка добавления
+$rowAdd = New-Object System.Windows.Forms.FlowLayoutPanel
+$rowAdd.AutoSize = $true
+$rowAdd.FlowDirection = "LeftToRight"
+$rowAdd.WrapContents = $false
+$lblProc = New-Object System.Windows.Forms.Label
+$lblProc.Text = "Процесс:"
+$lblProc.AutoSize = $true
+$lblProc.Margin = New-Object System.Windows.Forms.Padding(0, 8, 6, 0)
+$txtProc = New-Object System.Windows.Forms.TextBox
+$txtProc.Width = [int](200 * $Dpi)
+$txtProc.Margin = New-Object System.Windows.Forms.Padding(0, 5, 12, 0)
+$comboPrio = New-Object System.Windows.Forms.ComboBox
+$comboPrio.DropDownStyle = "DropDownList"
+$comboPrio.Width = [int](170 * $Dpi)
+$comboPrio.Margin = New-Object System.Windows.Forms.Padding(0, 5, 12, 0)
+foreach ($k in $PriorityChoices.Keys) { [void]$comboPrio.Items.Add($k) }
+$comboPrio.SelectedIndex = $comboPrio.Items.Count - 1
+$chkCores = New-Object System.Windows.Forms.CheckBox
+$chkCores.Text = "Affinity на все ядра"
+$chkCores.AutoSize = $true
+$chkCores.Margin = New-Object System.Windows.Forms.Padding(0, 7, 12, 0)
+$btnAddRule = New-StyledButton "Добавить" 100 $true
+$btnAddRule.Add_Click({
+    Add-ProcessRule -Name $txtProc.Text -Priority $PriorityChoices[$comboPrio.SelectedItem.ToString()] -AllCores $chkCores.Checked
+    $txtProc.Clear()
 })
-$btnStopBoost = New-StyledButton "Остановить" 110
-$btnStopBoost.Add_Click({ Stop-ProcessBoost })
-$rowGame.Controls.AddRange(@($lblGame, $comboGame, $btnStartBoost, $btnStopBoost))
-$pgGame.Controls.Add($rowGame)
+$rowAdd.Controls.AddRange(@($lblProc, $txtProc, $comboPrio, $chkCores, $btnAddRule))
+
+# Строка быстрых пресетов
+$rowPreset = New-Object System.Windows.Forms.FlowLayoutPanel
+$rowPreset.AutoSize = $true
+$rowPreset.FlowDirection = "LeftToRight"
+$rowPreset.WrapContents = $false
+$lblPreset = New-Object System.Windows.Forms.Label
+$lblPreset.Text = "Быстро добавить игру:"
+$lblPreset.AutoSize = $true
+$lblPreset.Margin = New-Object System.Windows.Forms.Padding(0, 8, 6, 0)
+$comboGame = New-Object System.Windows.Forms.ComboBox
+$comboGame.DropDownStyle = "DropDownList"
+$comboGame.Width = [int](200 * $Dpi)
+$comboGame.Margin = New-Object System.Windows.Forms.Padding(0, 5, 12, 0)
+$GameProfiles.Keys | ForEach-Object { [void]$comboGame.Items.Add($_) }
+$comboGame.SelectedIndex = 0
+$btnAddPreset = New-StyledButton "Добавить (High)" 150
+$btnAddPreset.Add_Click({
+    $procName = $GameProfiles[$comboGame.SelectedItem.ToString()]
+    Add-ProcessRule -Name $procName -Priority "High" -AllCores $false
+})
+$btnPickRunning = New-StyledButton "Выбрать из запущенных…" 220
+$btnPickRunning.Add_Click({
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Запущенные процессы"
+    $dlg.Font = $UiFont
+    $dlg.StartPosition = "CenterParent"
+    $dlg.ClientSize = New-Object System.Drawing.Size([int](420 * $Dpi), [int](480 * $Dpi))
+    $dlg.FormBorderStyle = "FixedDialog"
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+    $lst = New-Object System.Windows.Forms.ListBox
+    $lst.Dock = "Fill"
+    Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -ExpandProperty ProcessName -Unique | Sort-Object | ForEach-Object { [void]$lst.Items.Add($_) }
+    $pnl = New-Object System.Windows.Forms.FlowLayoutPanel
+    $pnl.Dock = "Bottom"
+    $pnl.Height = [int](48 * $Dpi)
+    $pnl.FlowDirection = "RightToLeft"
+    $pnl.Padding = New-Object System.Windows.Forms.Padding(8)
+    $bCancel = New-StyledButton "Отмена" 100
+    $bCancel.DialogResult = "Cancel"
+    $bOk = New-StyledButton "Выбрать" 120 $true
+    $bOk.DialogResult = "OK"
+    $pnl.Controls.AddRange(@($bCancel, $bOk))
+    $dlg.AcceptButton = $bOk
+    $dlg.CancelButton = $bCancel
+    $dlg.Controls.Add($lst)
+    $dlg.Controls.Add($pnl)
+    if ($dlg.ShowDialog($form) -eq "OK" -and $lst.SelectedItem) { $txtProc.Text = $lst.SelectedItem.ToString() }
+    $dlg.Dispose()
+})
+$rowPreset.Controls.AddRange(@($lblPreset, $comboGame, $btnAddPreset, $btnPickRunning))
+
+# Строка управления
+$rowCtl = New-Object System.Windows.Forms.FlowLayoutPanel
+$rowCtl.AutoSize = $true
+$rowCtl.FlowDirection = "LeftToRight"
+$rowCtl.WrapContents = $false
+$lblMon = New-Object System.Windows.Forms.Label
+$lblMon.Text = "Мониторинг: выключен"
+$lblMon.AutoSize = $true
+$lblMon.ForeColor = $ColorMuted
+$lblMon.Margin = New-Object System.Windows.Forms.Padding(12, 11, 0, 0)
+$btnRemoveRule = New-StyledButton "Удалить выбранные" 170
+$btnRemoveRule.Add_Click({
+    $names = @($lvRules.SelectedItems | ForEach-Object { $_.Text })
+    foreach ($n in $names) {
+        $victim = $Global:ProcessRules | Where-Object { $_.Name -eq $n } | Select-Object -First 1
+        if ($victim) { $Global:ProcessRules.Remove($victim) }
+    }
+    Save-ProcessRules
+    Refresh-RulesList
+})
+$btnStartBoost = New-StyledButton "Запустить мониторинг" 200 $true
+$btnStartBoost.Add_Click({
+    if (Start-ProcessBoost) { $lblMon.Text = "Мониторинг: ВКЛЮЧЁН"; $lblMon.ForeColor = $ColorAccent }
+})
+$btnStopBoost = New-StyledButton "Остановить" 120
+$btnStopBoost.Add_Click({
+    Stop-ProcessBoost
+    $lblMon.Text = "Мониторинг: выключен"
+    $lblMon.ForeColor = $ColorMuted
+})
+$rowCtl.Controls.AddRange(@($btnRemoveRule, $btnStartBoost, $btnStopBoost, $lblMon))
+
+$pgGame.Controls.Add($rowAdd)
+$pgGame.Controls.Add($rowPreset)
+$pgGame.Controls.Add($lvRules)
+$pgGame.Controls.Add($rowCtl)
+Refresh-RulesList
+Add-OptNote $pgGame "Приоритет Realtime намеренно не предлагается: он может подвесить систему. Список сохраняется в %APPDATA%\WinGameOptimizer\process_rules.json. Мониторинг работает, пока открыто окно скрипта." $null
 
 # --- Нижняя часть: журнал + кнопки ---
 $Global:LogBox = New-Object System.Windows.Forms.TextBox
@@ -1398,7 +1606,14 @@ $Global:LblStatus.ForeColor = $ColorAccent
 $Global:LblStatus.AutoSize = $true
 $Global:LblStatus.Anchor = "Top, Right"
 $Global:LblStatus.Location = New-Object System.Drawing.Point(([int](640 * $Dpi)), 6)
-$pnlHeader.Controls.AddRange(@($lblTitle, $lblSub, $Global:LblStatus))
+$btnApplyTop = New-StyledButton "Применить выбранное" 190 $true
+$btnApplyTop.Margin = New-Object System.Windows.Forms.Padding(0)
+$btnApplyTop.Add_Click({ $btnApply.PerformClick() })
+$pnlHeader.Controls.AddRange(@($lblTitle, $lblSub, $Global:LblStatus, $btnApplyTop))
+$pnlHeader.Add_Resize({
+    $btnApplyTop.Location = New-Object System.Drawing.Point(($pnlHeader.ClientSize.Width - $btnApplyTop.Width - 4), 2)
+    $Global:LblStatus.Location = New-Object System.Drawing.Point(($btnApplyTop.Left - $Global:LblStatus.Width - 12), 10)
+})
 
 # Жёсткая сетка: заголовок / вкладки (тянутся) / журнал / кнопки — кнопки всегда видны внизу.
 $root = New-Object System.Windows.Forms.TableLayoutPanel
@@ -1408,7 +1623,7 @@ $root.RowCount = 4
 [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle("Percent", 100)))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Absolute", [int](58 * $Dpi))))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Percent", 100)))
-[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Absolute", [int](140 * $Dpi))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Absolute", [int](120 * $Dpi))))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle("Absolute", [int](54 * $Dpi))))
 $root.Controls.Add($pnlHeader, 0, 0)
 $root.Controls.Add($tabs, 0, 1)
@@ -1421,5 +1636,16 @@ Refresh-OptionStates
 Write-Log "WinGameOptimizer запущен. Backup-папка: $BackupRoot"
 Write-Log "Реальный эффект: снижение фоновой нагрузки/задержки и более стабильный frame-time."
 Write-Log "На GPU-bound сценариях прирост FPS от софт-твиков обычно умеренный (единицы-десятки %)."
+
+$form.Add_Shown({
+    $wa2 = [System.Windows.Forms.Screen]::FromControl($form).WorkingArea
+    if ($form.Height -gt $wa2.Height) { $form.Height = $wa2.Height }
+    if ($form.Width  -gt $wa2.Width)  { $form.Width  = $wa2.Width }
+    $form.Top  = [Math]::Max($wa2.Top,  [Math]::Min($form.Top,  $wa2.Bottom - $form.Height))
+    $form.Left = [Math]::Max($wa2.Left, [Math]::Min($form.Left, $wa2.Right  - $form.Width))
+    $pnlHeader.PerformLayout()
+    $btnApplyTop.Location = New-Object System.Drawing.Point(($pnlHeader.ClientSize.Width - $btnApplyTop.Width - 4), 2)
+    $Global:LblStatus.Location = New-Object System.Drawing.Point(($btnApplyTop.Left - $Global:LblStatus.Width - 12), 10)
+})
 
 [void]$form.ShowDialog()
