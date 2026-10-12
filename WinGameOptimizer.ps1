@@ -1017,7 +1017,7 @@ function Reset-Option {
                 if (Get-Service -Name $name -ErrorAction SilentlyContinue) {
                     sc.exe config $name start= $ServiceDefaults[$name] | Out-Null
                     if ($ServiceDefaults[$name] -ne "demand") { Start-Service -Name $name -ErrorAction SilentlyContinue }
-                    Write-Log "Служба $name: режим запуска $($ServiceDefaults[$name])."
+                    Write-Log "Служба ${name}: режим запуска $($ServiceDefaults[$name])."
                 }
             }
         }
