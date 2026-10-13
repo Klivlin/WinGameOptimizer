@@ -41,7 +41,7 @@ powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 ### 1. Вкладка «Питание» / Power tab
 | Настройка (RU) | Setting (EN) | Эффект |
 |---|---|---|
-| Ultimate Performance план питания | Ultimate Performance power plan | Включает скрытый план питания Windows: меньше энергосберегающих переходов CPU. На AMD X3D заменяется на «Сбалансированная» (см. ниже) |
+| Ultimate Performance план питания (выкл. по умолчанию) | Ultimate Performance power plan (off by default) | Включает скрытый план питания Windows: меньше энергосберегающих переходов CPU. На AMD X3D заменяется на «Сбалансированная» (см. ниже) |
 | Отключить USB selective suspend | Disable USB selective suspend | USB-устройства (мышь/геймпад) не "засыпают", снижает случайные микро-лаги |
 | Отключить core parking | Disable core parking | Все логические ядра CPU остаются активными, снижает задержку пробуждения ядра при нагрузке |
 | Отключить Power Throttling (выкл. по умолчанию) | Disable Power Throttling (off by default) | Windows не ограничивает фоновые процессы по энергопотреблению; на ноутбуке от батареи увеличит расход |
@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 
 | RU | EN | Эффект |
 |---|---|---|
-| Hardware-Accelerated GPU Scheduling (HAGS) (включается; в спорных случаях сравните сами) | same | Планирование GPU на уровне драйвера вместо CPU-диспетчера, снижает задержку рендера на поддерживаемых GPU |
+| Hardware-Accelerated GPU Scheduling (HAGS) (выкл. по умолчанию; на некоторых драйверах вызывает сбои игр) | same (off by default) | Планирование GPU на уровне драйвера вместо CPU-диспетчера, снижает задержку рендера на поддерживаемых GPU |
 | Отключить Game DVR / Xbox Game Bar overlay | Disable Game DVR / Xbox Game Bar overlay | Убирает фоновую запись/оверлей и глобально предпочитает полноэкранный эксклюзивный режим (FSE вместо FSO) |
 | Приоритет GPU/CPU для игр (MMCSS "Games") (выкл. по умолчанию) | Game-priority MMCSS profile (off by default) | MMCSS в основном влияет на аудиопотоки; для игр эффект спорный — включайте и сравнивайте |
 | Визуальные эффекты "Лучшее быстродействие" (выкл. по умолчанию) | "Best performance" visual effects (off by default) | Отключает анимации Windows, немного освобождает CPU/GPU |
@@ -71,12 +71,12 @@ powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 ### 4. Вкладка «Система» / System tab
 | RU | EN | Эффект |
 |---|---|---|
-| Остановить фоновые службы (SysMain, WSearch, DiagTrack, dmwappushservice, MapsBroker, lfsvc, RetailDemo, WerSvc) | Stop background services (same list) | Снижает фоновую нагрузку на CPU/диск от индексации, телеметрии, геолокации и т.д. |
+| Остановить фоновые службы (SysMain, WSearch, DiagTrack, dmwappushservice, MapsBroker, lfsvc, RetailDemo) (выкл. по умолчанию) | Stop background services (same list, off by default) | Снижает фоновую нагрузку на CPU/диск от индексации, телеметрии, геолокации и т.д. |
 | Отключить фоновые задачи планировщика (телеметрия, CEIP, карты, отзывы) | Disable background scheduled tasks (telemetry, CEIP, maps, feedback) | Убирает периодические фоновые "просыпания" системы |
 | Отключить фоновые UWP-приложения | Disable background UWP apps | UWP-приложения из Store не работают в фоне и не тратят ресурсы |
 | Отключить энергосбережение сетевой карты | Disable NIC power saving | NIC не уходит в режим энергосбережения, снижает сетевые микро-лаги/джиттер |
 | Отключить гибернацию (выкл. по умолчанию) | Disable hibernation (off by default) | Освобождает место на диске (убирает hiberfil.sys) |
-| Очистить temp/кэш/корзину | Clean temp/cache/recycle bin | Освобождает место, убирает мусорные файлы, которые может сканировать антивирус/индексатор (Prefetch не трогается) |
+| Очистить temp/кэш/корзину | Clean temp/cache/recycle bin | Освобождает место, убирает мусорные файлы, которые может сканировать антивирус/индексатор (Prefetch и `CrashDumps` не трогаются, чтобы не стирать диагностику) |
 | Отключить энергосбережение всех устройств (выкл. по умолчанию) | Disable power saving for all devices (off by default) | Снимает «Разрешить отключение устройства для экономии энергии» (WMI `MSPower_DeviceEnable`) |
 | Не ставить драйверы через Центр обновления Windows (выкл. по умолчанию) | Exclude drivers from Windows Update (off by default) | Windows не перезапишет драйвер видеокарты; обновлять драйверы нужно вручную |
 | Win32PrioritySeparation = 18 (выкл. по умолчанию) | same (off by default) | Фиксированный длинный квант планировщика: фоновый поток реже вытесняет игровой. Эффект зависит от системы — тестируйте |
@@ -166,6 +166,17 @@ Your own process list with a priority: process name (without `.exe`, can be pick
 
 ---
 
+## Если игры закрываются / Troubleshooting
+
+1. Нажмите «Отчёт» сразу после вылета и посмотрите файл на рабочем столе (применённые пункты, версия драйвера, ошибки за 24 часа, состояние `WerSvc`).
+2. Сбросите по одному кнопкой «↺ Сброс» самые рискованные пункты: Mitigations, MSI-режим, HAGS, Game DVR, фоновые службы, затем перезагрузитесь. Либо «Восстановить из бэкапа…» → самый старый бэкап (исходное состояние).
+3. Логи игр: Valorant `%LOCALAPPDATA%\VALORANT\Saved\Logs`, Vanguard `C:\Program Files\Riot Vanguard\Logs`; CS2/Dota 2 — параметр запуска `-condebug`.
+4. Если вылет без записи в журнале событий — игру, скорее всего, закрывает античит.
+
+Starting with v1.0.1 the script no longer disables `WerSvc` and no longer clears `CrashDumps`, so crash diagnostics keep working.
+
+---
+
 ## Честно о результатах / Honest expectations
 
 Эти твики снижают фоновую нагрузку системы, делают frame-time более стабильным и уменьшают задержку ввода/сети. Они **не заменяют** апгрейд железа и не дают гарантированный кратный прирост FPS в GPU-bound сценариях — основной прирост там даёт видеокарта и настройки графики в самой игре.
@@ -183,6 +194,10 @@ These tweaks reduce background system load, smooth out frame-time, and lower inp
 - Windows 10 (1903+) or Windows 11, x64.
 - PowerShell 5.1+ (built into Windows).
 - Administrator rights.
+
+## Версии / Changelog
+
+**v1.0.1** — исправлена загрузка списка приоритетов процессов (правила склеивались в одно); `WerSvc` больше не отключается, `CrashDumps` не очищается; HAGS, Ultimate Performance и фоновые службы выключены по умолчанию; в отчёт добавлены состояние `WerSvc` и пути к логам; кэш определения CPU и устройств ускоряет запуск; полоса прогресса запуска в окне PowerShell.
 
 ## Лицензия / License
 

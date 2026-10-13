@@ -46,6 +46,13 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+$AppVersion = "1.0.1"
+function Show-Startup {
+    param([string]$Status, [int]$Percent)
+    Write-Progress -Id 1 -Activity "WinGameOptimizer $AppVersion — запуск" -Status "$Status ($Percent%)" -PercentComplete $Percent
+}
+Show-Startup "Загружены компоненты интерфейса" 10
+
 # ---------------------------------------------------------------------------
 # 1. Общие пути и утилиты
 # ---------------------------------------------------------------------------
@@ -180,20 +187,22 @@ function Restore-FromBackup {
 # 2. Блоки оптимизаций
 # ---------------------------------------------------------------------------
 
+$script:CpuNameCache = $null
+function Get-CpuName {
+    if ($null -eq $script:CpuNameCache) {
+        try { $script:CpuNameCache = [string](Get-CimInstance Win32_Processor | Select-Object -First 1).Name } catch { $script:CpuNameCache = "" }
+    }
+    return $script:CpuNameCache
+}
+
 function Test-IsX3D {
-    try {
-        $name = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
-        return ($name -match "X3D")
-    } catch { return $false }
+    return ((Get-CpuName) -match "X3D")
 }
 
 function Test-IsDualCcdX3D {
     # Двухчиплетные X3D (7900X3D/7950X3D/9900X3D/9950X3D) зависят от драйвера 3D V-Cache,
     # который использует Xbox Game Bar для определения игр и распределения по CCD.
-    try {
-        $name = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
-        return ($name -match "(79|99)[05]0X3D")
-    } catch { return $false }
+    return ((Get-CpuName) -match "(79|99)[05]0X3D")
 }
 
 function Opt-UltimatePower {
@@ -324,8 +333,7 @@ $BackgroundServicesList = @(
     "dmwappushservice",   # WAP Push message routing — не нужен геймеру
     "MapsBroker",         # Downloaded Maps Manager
     "lfsvc",              # Geolocation Service
-    "RetailDemo",         # Retail Demo Service
-    "WerSvc"              # Windows Error Reporting — можно отключать на время игры
+    "RetailDemo"          # Retail Demo Service
 )
 
 function Opt-BackgroundServices {
@@ -341,6 +349,20 @@ function Opt-BackgroundServices {
             Write-Log "Не удалось изменить службу $s : $($_.Exception.Message)" "ERROR"
         }
     }
+}
+
+function Read-JsonArray {
+    param([string]$Path)
+    $result = New-Object System.Collections.ArrayList
+    if (-not (Test-Path $Path)) { return $result.ToArray() }
+    $raw = Get-Content -Path $Path -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $result.ToArray() }
+    $parsed = $raw | ConvertFrom-Json
+    foreach ($item in $parsed) {
+        if ($item -is [System.Array]) { foreach ($sub in $item) { [void]$result.Add($sub) } }
+        else { [void]$result.Add($item) }
+    }
+    return $result.ToArray()
 }
 
 $ScheduledTasksBloatList = @(
@@ -463,8 +485,7 @@ function Clear-TempAndCache {
     $paths = @(
         "$env:TEMP\*",
         "$env:WINDIR\Temp\*",
-        "$env:LOCALAPPDATA\Microsoft\Windows\INetCache\*",
-        "$env:LOCALAPPDATA\CrashDumps\*"
+        "$env:LOCALAPPDATA\Microsoft\Windows\INetCache\*"
     )
     foreach ($p in $paths) {
         try {
@@ -569,7 +590,7 @@ function Opt-NicAdvancedPowerSaving {
     Write-Log "Отключение EEE / Green Ethernet / энергосбережения драйвера сетевой карты..."
     $saved = @()
     if (Test-Path $NicOriginalFile) {
-        try { $saved = @(Get-Content $NicOriginalFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $saved = @() }
+        try { $saved = @(Read-JsonArray $NicOriginalFile) } catch { $saved = @() }
     }
     $changed = 0
     Get-ChildItem $NicClassPath -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' } | ForEach-Object {
@@ -851,9 +872,11 @@ function Load-ProcessRules {
     $Global:ProcessRules.Clear()
     if (-not (Test-Path $ProcessRulesFile)) { return }
     try {
-        $data = @(Get-Content -Path $ProcessRulesFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+        $data = @(Read-JsonArray $ProcessRulesFile)
+        $validPriorities = @("Idle","BelowNormal","Normal","AboveNormal","High")
         foreach ($r in $data) {
-            if ($r.Name -and $r.Priority -and -not (Test-ProtectedProcess $r.Name)) {
+            # повреждённые записи (от старой версии) отбрасываются: у них в Name/Priority склеено несколько значений
+            if ($r.Name -and $r.Priority -and ($validPriorities -contains [string]$r.Priority) -and -not (Test-ProtectedProcess $r.Name)) {
                 [void]$Global:ProcessRules.Add([PSCustomObject]@{ Name = [string]$r.Name; Priority = [string]$r.Priority; AllCores = [bool]$r.AllCores })
             }
         }
@@ -932,6 +955,13 @@ function Get-PowerSettingAc {
     return $null
 }
 
+$script:HidCache = $null
+$script:TasksCache = $null
+function Get-HidDevicesCached {
+    if ($null -eq $script:HidCache) { $script:HidCache = @(Get-InputHidDevices) }
+    return $script:HidCache
+}
+
 function Test-OptionApplied {
     param([string]$Key)
     try {
@@ -974,8 +1004,11 @@ function Test-OptionApplied {
             }
             "BgTasks"     {
                 $found = 0
+                if ($null -eq $script:TasksCache) { $script:TasksCache = @(Get-ScheduledTask -ErrorAction SilentlyContinue) }
                 foreach ($t in $ScheduledTasksBloatList) {
-                    $task = Get-ScheduledTask -TaskPath ((Split-Path $t) + "\") -TaskName (Split-Path $t -Leaf) -ErrorAction SilentlyContinue
+                    $tp = (Split-Path $t) + "\"
+                    $tn = Split-Path $t -Leaf
+                    $task = $script:TasksCache | Where-Object { $_.TaskPath -eq $tp -and $_.TaskName -eq $tn } | Select-Object -First 1
                     if ($task) { $found++; if ($task.State -ne "Disabled") { return $false } }
                 }
                 return ($found -gt 0)
@@ -1001,7 +1034,7 @@ function Test-OptionApplied {
                         ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters" "KeyboardDataQueueSize") -eq 20))
             }
             "HidPower"    {
-                $devs = @(Get-InputHidDevices)
+                $devs = @(Get-HidDevicesCached)
                 $checked = 0
                 foreach ($d in $devs) {
                     $rp = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.InstanceId)\Device Parameters"
@@ -1010,7 +1043,7 @@ function Test-OptionApplied {
                 return ($checked -gt 0)
             }
             "MsiMode"     {
-                $devs = @(Get-InputHidDevices)
+                $devs = @(Get-HidDevicesCached)
                 if ($devs.Count -eq 0) { return $false }
                 foreach ($d in $devs) {
                     if ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Enum\$($d.InstanceId)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties" "MSISupported") -ne 1) { return $false }
@@ -1030,7 +1063,7 @@ function Test-OptionApplied {
             }
             "NicAdvanced"     {
                 if (-not (Test-Path $NicOriginalFile)) { return $false }
-                $entries = @(Get-Content $NicOriginalFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+                $entries = @(Read-JsonArray $NicOriginalFile)
                 if ($entries.Count -eq 0) { return $false }
                 foreach ($e in $entries) { if ([string](Get-RegVal $e.Path $e.Name) -ne "0") { return $false } }
                 return $true
@@ -1199,7 +1232,7 @@ function Reset-Option {
         }
         "NicAdvanced" {
             if (-not (Test-Path $NicOriginalFile)) { Write-Log "Сохранённых исходных значений сетевой карты нет — сбрасывать нечего." "WARN"; break }
-            foreach ($e in @(Get-Content $NicOriginalFile -Raw -Encoding UTF8 | ConvertFrom-Json)) {
+            foreach ($e in @(Read-JsonArray $NicOriginalFile)) {
                 try {
                     if ($e.Kind -eq "String") { Set-ItemProperty -Path $e.Path -Name $e.Name -Value ([string]$e.Value) -Type String }
                     else { Set-ItemProperty -Path $e.Path -Name $e.Name -Value ([int]$e.Value) -Type DWord }
@@ -1238,7 +1271,7 @@ function Protect-ReportText {
 
 function Save-DiagnosticReport {
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add("WinGameOptimizer — диагностический отчёт")
+    $lines.Add("WinGameOptimizer v$AppVersion — диагностический отчёт")
     $lines.Add("Создан: " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
     $lines.Add("Отчёт локальный: имя пользователя и компьютера заменены, ничего не отправляется.")
     $lines.Add("")
@@ -1277,6 +1310,20 @@ function Save-DiagnosticReport {
     if ($Global:ProcessRules.Count -eq 0) { $lines.Add("(нет)") }
     else { foreach ($r in $Global:ProcessRules) { $lines.Add("$($r.Name) -> $($r.Priority)$(if ($r.AllCores) { ', все ядра' })") } }
     $lines.Add("")
+    $lines.Add("== Диагностика ==")
+    try {
+        $wer = Get-Service -Name WerSvc -ErrorAction Stop
+        $lines.Add("Служба WerSvc (отчёты об ошибках): запуск=$($wer.StartType), состояние=$($wer.Status)" + $(if ($wer.StartType -eq "Disabled") { "  <-- ОТКЛЮЧЕНА: Windows может не записывать события о падениях" } else { "" }))
+    } catch { $lines.Add("Служба WerSvc: не найдена") }
+    foreach ($lp in @(
+        @("Логи Valorant", "$env:LOCALAPPDATA\VALORANT\Saved\Logs"),
+        @("Логи Vanguard", "$env:ProgramFiles\Riot Vanguard\Logs"),
+        @("Дампы падений (CrashDumps)", "$env:LOCALAPPDATA\CrashDumps"))) {
+        $exists = Test-Path $lp[1]
+        $cnt = if ($exists) { @(Get-ChildItem $lp[1] -File -ErrorAction SilentlyContinue).Count } else { 0 }
+        $lines.Add("$($lp[0]): " + $(if ($exists) { "есть, файлов: $cnt  ->  " + (Protect-ReportText $lp[1]) } else { "нет" }))
+    }
+    $lines.Add("")
     $lines.Add("== Ошибки приложений за 24 часа (Application Error / .NET / WER) ==")
     try {
         $ev = Get-WinEvent -FilterHashtable @{ LogName = "Application"; Id = 1000, 1001, 1002; StartTime = (Get-Date).AddHours(-24) } -MaxEvents 25 -ErrorAction Stop
@@ -1311,6 +1358,8 @@ function Save-DiagnosticReport {
     }
 }
 
+Show-Startup "Подготовка функций завершена" 25
+
 # ---------------------------------------------------------------------------
 # 4. GUI
 # ---------------------------------------------------------------------------
@@ -1329,7 +1378,8 @@ try { $g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $Dpi = $g.DpiX /
 $WrapWidth   = [int](820 * $Dpi)
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "WinGameOptimizer — Valorant / CS2 / Dota 2"
+Show-Startup "Построение интерфейса" 30
+$form.Text = "WinGameOptimizer v$AppVersion — Valorant / CS2 / Dota 2"
 $form.Font = $UiFont
 $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $formW = [Math]::Min([int](900 * $Dpi), [int]($wa.Width * 0.95))
@@ -1458,8 +1508,15 @@ function Add-OptCheckbox {
 
 # Помечает уже применённые пункты (снимает галочку и блокирует), возвращает остальные в исходное состояние.
 function Refresh-OptionStates {
+    param([bool]$Startup = $false)
+    $script:HidCache = $null
+    $script:TasksCache = $null
     $applied = 0
-    foreach ($key in @($checkboxes.Keys)) {
+    $keys = @($checkboxes.Keys)
+    $idx = 0
+    foreach ($key in $keys) {
+        $idx++
+        if ($Startup) { Show-Startup "Проверка состояния системы: $($optMeta[$key].BaseLabel)" ([int](45 + 50 * $idx / $keys.Count)) }
         $cb = $checkboxes[$key]
         $meta = $optMeta[$key]
         $isApplied = Test-OptionApplied -Key $key
@@ -1517,14 +1574,14 @@ $pgPower = New-OptTab "Питание"
 if (Test-IsX3D) {
     Add-OptNote $pgPower "Обнаружен процессор X3D: вместо Ultimate Performance будет включена «Сбалансированная», core parking не трогается (рекомендация AMD для драйвера 3D V-Cache)." $ColorWarn $true
 }
-Add-OptCheckbox $pgPower "UltimatePower" "План питания Ultimate Performance" "Меньше энергосберегающих переходов CPU. На AMD X3D автоматически заменяется на «Сбалансированная»."
+Add-OptCheckbox $pgPower "UltimatePower" "План питания Ultimate Performance" "Меньше энергосберегающих переходов CPU. На AMD X3D автоматически заменяется на «Сбалансированная»; на обычных AMD «Сбалансированная» часто лучше — тестируйте." $false
 Add-OptCheckbox $pgPower "UsbSuspend"    "Отключить USB selective suspend" "USB-устройства (мышь, геймпад) не «засыпают» — меньше случайных микро-лагов."
 Add-OptCheckbox $pgPower "CoreParking"   "Отключить core parking" "Все ядра CPU всегда активны. Пропускается на X3D."
 Add-OptCheckbox $pgPower "PowerThrottling" "Отключить Power Throttling" "Windows не ограничивает фоновые процессы по энергопотреблению. На ноутбуке от батареи увеличит расход." $false
 
 # --- GPU / Дисплей ---
 $pgGpu = New-OptTab "GPU / Дисплей"
-Add-OptCheckbox $pgGpu "HAGS"     "Hardware-Accelerated GPU Scheduling (HAGS)" "Планирование GPU на стороне видеокарты. Нужна перезагрузка; если станет хуже — отключите."
+Add-OptCheckbox $pgGpu "HAGS"     "Hardware-Accelerated GPU Scheduling (HAGS)" "Планирование GPU на стороне видеокарты. Нужна перезагрузка; на некоторых драйверах вызывает сбои игр — включайте осознанно." $false
 Add-OptCheckbox $pgGpu "GameDVR"  "Отключить Game DVR / Xbox Game Bar overlay" "Убирает фоновую запись и оверлей. На двухчиплетных X3D пропускается (нужен драйверу 3D V-Cache)."
 Add-OptCheckbox $pgGpu "MMCSS"    "Приоритет MMCSS-профиля «Games»" "Эффект спорный: MMCSS в основном влияет на аудиопотоки. Включайте и сравнивайте." $false
 Add-OptCheckbox $pgGpu "VisualFx" "Визуальные эффекты: «Лучшее быстродействие»" "Отключает анимации Windows." $false
@@ -1538,7 +1595,7 @@ Add-OptCheckbox $pgNet "DnsWinsock"  "Flush DNS + сброс Winsock" "Може�
 
 # --- Система ---
 $pgSys = New-OptTab "Система"
-Add-OptCheckbox $pgSys "BgServices"  "Остановить фоновые службы" "SysMain, WSearch, DiagTrack, dmwappushservice, MapsBroker, lfsvc, RetailDemo, WerSvc."
+Add-OptCheckbox $pgSys "BgServices"  "Остановить фоновые службы" "SysMain, WSearch, DiagTrack, dmwappushservice, MapsBroker, lfsvc, RetailDemo." $false
 Add-OptCheckbox $pgSys "BgTasks"     "Отключить фоновые задачи планировщика" "Телеметрия, CEIP, карты, отзывы."
 Add-OptCheckbox $pgSys "BgApps"      "Отключить фоновые UWP-приложения" "Приложения из Store не работают в фоне."
 Add-OptCheckbox $pgSys "NicPower"    "Отключить энергосбережение сетевой карты" "Меньше сетевых микро-лагов и джиттера."
@@ -2053,8 +2110,11 @@ $root.Controls.Add($grpLog, 0, 2)
 $root.Controls.Add($pnlButtons, 0, 3)
 $form.Controls.Add($root)
 
+Show-Startup "Чтение автозагрузки" 40
 Refresh-StartupList
-Refresh-OptionStates
+Refresh-OptionStates -Startup $true
+Show-Startup "Готово" 100
+Write-Progress -Id 1 -Activity "WinGameOptimizer $AppVersion — запуск" -Completed
 Write-Log "WinGameOptimizer запущен. Backup-папка: $BackupRoot"
 Write-Log "Реальный эффект: снижение фоновой нагрузки/задержки и более стабильный frame-time."
 Write-Log "На GPU-bound сценариях прирост FPS от софт-твиков обычно умеренный (единицы-десятки %)."
