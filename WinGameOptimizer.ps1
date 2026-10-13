@@ -294,10 +294,23 @@ function Opt-NetworkThrottling {
     Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Value 0xffffffff
 }
 
+# Биты Win32PrioritySeparation: 0-1 — буст активного окна (0..2), 2-3 — тип кванта (1 переменный, 2 фиксированный),
+# 4-5 — длина кванта (1 длинный, 2 короткий). Значения в шестнадцатеричной записи, как в regedit и в сборниках твиков.
+$PrioSepPresets = [ordered]@{
+    "0x18 — фиксированный длинный квант, без буста активного окна (рекомендация разбора LLC)" = 24
+    "0x26 — «Normal»: баланс FPS и задержки (пак Demikon, +fps.reg)"                           = 38
+    "0x28 — «Best FPS»: короткий фиксированный квант (пак Demikon)"                             = 40
+    "0xFFFF3F91 — «Best Latency» (пак Demikon, нестандартное значение, на свой риск)"            = -49263
+    "0x02 — стандартное значение Windows"                                                       = 2
+}
+# Значения, которые считаются «применёнными» (0x12 — значение из v1.0.0/1.0.1, ошибочно записанное как десятичное 18)
+$PrioSepAppliedValues = @(24, 38, 40, -49263, 18)
+
 function Opt-PrioritySeparation {
-    # 0x12 (18): фиксированный длинный квант, приоритет фону не снижается так сильно (рекомендация из разборов планировщика).
-    Write-Log "Win32PrioritySeparation = 18 (фиксированный длинный квант)..."
-    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value 18
+    param([int]$Value = 24)
+    Write-Log ("Win32PrioritySeparation = 0x{0:X} ..." -f ($Value -band 0xFFFFFFFF))
+    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" -Name "Win32PrioritySeparation" -Value $Value
+    Write-Log "Параметр применяется для новых процессов; для надёжности перезагрузитесь." "WARN"
 }
 
 function Opt-DisableNagle {
@@ -1024,7 +1037,10 @@ function Test-OptionApplied {
                 return $true
             }
             "Hibernation" { return ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Control\Power" "HibernateEnabled") -eq 0) }
-            "PrioSep"     { return ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" "Win32PrioritySeparation") -eq 18) }
+            "PrioSep"     {
+                $v = Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" "Win32PrioritySeparation"
+                return ($null -ne $v -and ($PrioSepAppliedValues -contains [int]$v))
+            }
             "MouseAccel"  {
                 $k = "HKCU:\Control Panel\Mouse"
                 return (((Get-RegVal $k "MouseSpeed") -eq "0") -and ((Get-RegVal $k "MouseThreshold1") -eq "0") -and ((Get-RegVal $k "MouseThreshold2") -eq "0"))
@@ -1603,7 +1619,23 @@ Add-OptCheckbox $pgSys "Hibernation" "Отключить гибернацию" "
 Add-OptCheckbox $pgSys "ClearTemp"   "Очистить temp / кэш / корзину" "Выполняется перед применением остальных опций. Prefetch не трогается."
 Add-OptCheckbox $pgSys "DevPower"      "Отключить энергосбережение всех устройств" "Убирает галку «Разрешить отключение этого устройства для экономии энергии» у устройств в Диспетчере. Может увеличить расход на ноутбуке." $false
 Add-OptCheckbox $pgSys "DriverUpdates" "Не ставить драйверы через Центр обновления Windows" "Windows не будет перезаписывать драйвер видеокарты. Драйверы придётся обновлять вручную." $false
-Add-OptCheckbox $pgSys "PrioSep"     "Win32PrioritySeparation = 18" "Фиксированный длинный квант планировщика. Эффект зависит от системы — тестируйте." $false
+Add-OptCheckbox $pgSys "PrioSep"     "Win32PrioritySeparation — приоритет планировщика" "Выберите режим ниже. Эффект зависит от системы и игры — тестируйте; вернуть стандартное значение (0x02) можно кнопкой «Сброс»." $false
+$rowPrioSep = New-Object System.Windows.Forms.FlowLayoutPanel
+$rowPrioSep.AutoSize = $true
+$rowPrioSep.WrapContents = $false
+$rowPrioSep.FlowDirection = "LeftToRight"
+$rowPrioSep.Margin = New-Object System.Windows.Forms.Padding(22, 0, 0, 8)
+$lblPrioSep = New-Object System.Windows.Forms.Label
+$lblPrioSep.Text = "Режим:"
+$lblPrioSep.AutoSize = $true
+$lblPrioSep.Margin = New-Object System.Windows.Forms.Padding(0, 6, 6, 0)
+$comboPrioSep = New-Object System.Windows.Forms.ComboBox
+$comboPrioSep.DropDownStyle = "DropDownList"
+$comboPrioSep.Width = [int](640 * $Dpi)
+foreach ($k in $PrioSepPresets.Keys) { [void]$comboPrioSep.Items.Add($k) }
+$comboPrioSep.SelectedIndex = 0
+$rowPrioSep.Controls.AddRange(@($lblPrioSep, $comboPrioSep))
+$pgSys.Controls.Add($rowPrioSep)
 
 # --- Advanced (риск) ---
 $pgAdv = New-OptTab "Advanced (риск)"
@@ -1993,7 +2025,7 @@ $btnApply.Add_Click({
     if ($checkboxes["BgApps"].Checked)        { Opt-DisableBackgroundApps }
     if ($checkboxes["NicPower"].Checked)      { Opt-DisableNicPowerSaving }
     if ($checkboxes["Hibernation"].Checked)   { Opt-DisableHibernation }
-    if ($checkboxes["PrioSep"].Checked)       { Opt-PrioritySeparation }
+    if ($checkboxes["PrioSep"].Checked)       { Opt-PrioritySeparation -Value $PrioSepPresets[$comboPrioSep.SelectedItem.ToString()] }
     if ($checkboxes["PowerThrottling"].Checked) { Opt-DisablePowerThrottling }
     if ($checkboxes["DriverUpdates"].Checked) { Opt-DisableDriverUpdates }
     if ($checkboxes["DevPower"].Checked)      { Opt-DisableAllDevicePowerSaving }

@@ -79,7 +79,7 @@ powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 | Очистить temp/кэш/корзину | Clean temp/cache/recycle bin | Освобождает место, убирает мусорные файлы, которые может сканировать антивирус/индексатор (Prefetch и `CrashDumps` не трогаются, чтобы не стирать диагностику) |
 | Отключить энергосбережение всех устройств (выкл. по умолчанию) | Disable power saving for all devices (off by default) | Снимает «Разрешить отключение устройства для экономии энергии» (WMI `MSPower_DeviceEnable`) |
 | Не ставить драйверы через Центр обновления Windows (выкл. по умолчанию) | Exclude drivers from Windows Update (off by default) | Windows не перезапишет драйвер видеокарты; обновлять драйверы нужно вручную |
-| Win32PrioritySeparation = 18 (выкл. по умолчанию) | same (off by default) | Фиксированный длинный квант планировщика: фоновый поток реже вытесняет игровой. Эффект зависит от системы — тестируйте |
+| Win32PrioritySeparation — выбор режима (выкл. по умолчанию) | Win32PrioritySeparation preset (off by default) | Режимы: `0x18` фиксированный длинный квант (разбор LLC), `0x26` Normal, `0x28` Best FPS, `0xFFFF3F91` Best Latency (нестандартное, из пака Demikon), `0x02` стандарт Windows. Эффект зависит от системы — тестируйте; «Сброс» ставит `0x02` |
 
 ### 5. Вкладка «Мышь / Инпут-лаг» / Mouse & Input-lag tab
 | RU | EN | Эффект |
