@@ -1224,6 +1224,94 @@ function Reset-Option {
 }
 
 # ---------------------------------------------------------------------------
+# 3c. Диагностический отчёт (для разбора вылетов игр)
+# ---------------------------------------------------------------------------
+function Protect-ReportText {
+    param([string]$Text)
+    if (-not $Text) { return "" }
+    $t = $Text
+    if ($env:USERPROFILE) { $t = $t.Replace($env:USERPROFILE, "%USERPROFILE%") }
+    if ($env:USERNAME)    { $t = $t.Replace($env:USERNAME, "<user>") }
+    if ($env:COMPUTERNAME){ $t = $t.Replace($env:COMPUTERNAME, "<pc>") }
+    return $t
+}
+
+function Save-DiagnosticReport {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("WinGameOptimizer — диагностический отчёт")
+    $lines.Add("Создан: " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
+    $lines.Add("Отчёт локальный: имя пользователя и компьютера заменены, ничего не отправляется.")
+    $lines.Add("")
+    $lines.Add("== Система ==")
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        $lines.Add("Windows: $($os.Caption) (сборка $($os.BuildNumber), $($os.OSArchitecture))")
+        $lines.Add("ОЗУ: " + [math]::Round($os.TotalVisibleMemorySize / 1MB, 1) + " ГБ")
+    } catch { $lines.Add("Windows: не удалось определить") }
+    try {
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+        $lines.Add("CPU: $($cpu.Name.Trim()) ($($cpu.NumberOfCores) ядер / $($cpu.NumberOfLogicalProcessors) потоков)")
+    } catch { $lines.Add("CPU: не удалось определить") }
+    try {
+        foreach ($g in @(Get-CimInstance Win32_VideoController)) {
+            $lines.Add("GPU: $($g.Name), драйвер $($g.DriverVersion) от $($g.DriverDate)")
+        }
+    } catch { $lines.Add("GPU: не удалось определить") }
+    try { $lines.Add("Схема питания: " + ((powercfg /getactivescheme | Out-String).Trim())) } catch { }
+    $lines.Add("")
+    $lines.Add("== Применённые пункты (по текущему состоянию системы) ==")
+    $any = $false
+    foreach ($key in ($checkboxes.Keys | Sort-Object)) {
+        if (Test-OptionApplied -Key $key) {
+            $lines.Add("[x] $key — $($optMeta[$key].BaseLabel)")
+            $any = $true
+        }
+    }
+    if (-not $any) { $lines.Add("(нет)") }
+    $lines.Add("")
+    $lines.Add("== Бэкапы ==")
+    $bk = @(Get-BackupDirs)
+    if ($bk.Count -eq 0) { $lines.Add("(нет)") } else { foreach ($b in $bk) { $lines.Add($b.Name) } }
+    $lines.Add("")
+    $lines.Add("== Правила приоритетов процессов ==")
+    if ($Global:ProcessRules.Count -eq 0) { $lines.Add("(нет)") }
+    else { foreach ($r in $Global:ProcessRules) { $lines.Add("$($r.Name) -> $($r.Priority)$(if ($r.AllCores) { ', все ядра' })") } }
+    $lines.Add("")
+    $lines.Add("== Ошибки приложений за 24 часа (Application Error / .NET / WER) ==")
+    try {
+        $ev = Get-WinEvent -FilterHashtable @{ LogName = "Application"; Id = 1000, 1001, 1002; StartTime = (Get-Date).AddHours(-24) } -MaxEvents 25 -ErrorAction Stop
+        foreach ($e in $ev) {
+            $first = ($e.Message -split "`r?`n" | Where-Object { $_ } | Select-Object -First 3) -join " | "
+            $lines.Add("[" + $e.TimeCreated.ToString("MM-dd HH:mm:ss") + "] Id=$($e.Id) " + (Protect-ReportText $first))
+        }
+    } catch { $lines.Add("(нет записей или журнал недоступен)") }
+    $lines.Add("")
+    $lines.Add("== Системные сбои за 24 часа (видеодрайвер, перезагрузки, аппаратные ошибки) ==")
+    try {
+        $sys = Get-WinEvent -FilterHashtable @{ LogName = "System"; Level = 1, 2; StartTime = (Get-Date).AddHours(-24) } -MaxEvents 300 -ErrorAction Stop |
+            Where-Object { $_.ProviderName -match "Display|nvlddmkm|amdkmdag|amdwddmg|igfx|Kernel-Power|WHEA|Disk|volmgr|BugCheck|Application Popup|nvstor|stornvme" } |
+            Select-Object -First 25
+        foreach ($e in $sys) {
+            $first = ($e.Message -split "`r?`n" | Where-Object { $_ } | Select-Object -First 2) -join " | "
+            $lines.Add("[" + $e.TimeCreated.ToString("MM-dd HH:mm:ss") + "] $($e.ProviderName) Id=$($e.Id) " + (Protect-ReportText $first))
+        }
+        if (-not $sys) { $lines.Add("(нет подходящих записей)") }
+    } catch { $lines.Add("(нет записей или журнал недоступен)") }
+
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    if (-not $desktop -or -not (Test-Path $desktop)) { $desktop = $env:USERPROFILE }
+    $file = Join-Path $desktop ("WinGameOptimizer_report_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".txt")
+    try {
+        [IO.File]::WriteAllLines($file, $lines, (New-Object Text.UTF8Encoding $true))
+        Write-Log "Отчёт сохранён: $file"
+        Start-Process explorer.exe -ArgumentList "/select,`"$file`"" -ErrorAction SilentlyContinue
+        [System.Windows.Forms.MessageBox]::Show("Отчёт сохранён на рабочем столе:`r`n$file`r`n`r`nФайл локальный, перед отправкой можете проверить его содержимое.", "Диагностический отчёт") | Out-Null
+    } catch {
+        Write-Log "Не удалось сохранить отчёт: $($_.Exception.Message)" "ERROR"
+    }
+}
+
+# ---------------------------------------------------------------------------
 # 4. GUI
 # ---------------------------------------------------------------------------
 try {
@@ -1247,7 +1335,7 @@ $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $formW = [Math]::Min([int](900 * $Dpi), [int]($wa.Width * 0.95))
 $formH = [Math]::Min([int](780 * $Dpi), [int]($wa.Height * 0.90))
 $form.ClientSize = New-Object System.Drawing.Size($formW, $formH)
-$form.MinimumSize = New-Object System.Drawing.Size([Math]::Min([int](820 * $Dpi), $formW), [Math]::Min([int](560 * $Dpi), $formH))
+$form.MinimumSize = New-Object System.Drawing.Size([Math]::Min([int](860 * $Dpi), $formW), [Math]::Min([int](560 * $Dpi), $formH))
 $form.StartPosition = "CenterScreen"
 $form.Padding = New-Object System.Windows.Forms.Padding(10)
 
@@ -1754,7 +1842,10 @@ $grpLog.Dock = "Fill"
 $grpLog.Padding = New-Object System.Windows.Forms.Padding(8, 4, 8, 8)
 $grpLog.Controls.Add($Global:LogBox)
 
-$btnBackup = New-StyledButton "Создать бэкап" 140
+$btnReport = New-StyledButton "Отчёт" 100
+$btnReport.Add_Click({ Save-DiagnosticReport })
+
+$btnBackup = New-StyledButton "Создать бэкап" 130
 $btnBackup.Add_Click({ Backup-CurrentState | Out-Null })
 
 function Select-BackupDir {
@@ -1807,7 +1898,7 @@ function Select-BackupDir {
     return $picked
 }
 
-$btnRestore = New-StyledButton "Восстановить из бэкапа…" 210
+$btnRestore = New-StyledButton "Восстановить из бэкапа…" 190
 $btnRestore.Add_Click({
     $picked = Select-BackupDir
     if (-not $picked) { return }
@@ -1901,7 +1992,7 @@ $flowLeft = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowLeft.Dock = "Left"
 $flowLeft.AutoSize = $true
 $flowLeft.FlowDirection = "LeftToRight"
-$flowLeft.Controls.AddRange(@($btnBackup, $btnRestore))
+$flowLeft.Controls.AddRange(@($btnBackup, $btnRestore, $btnReport))
 
 $flowRight = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowRight.Dock = "Right"
