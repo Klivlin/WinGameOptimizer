@@ -1343,6 +1343,7 @@ $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = "Fill"
 $tabs.Font = $UiFont
 $tabs.Padding = New-Object System.Drawing.Point(14, 5)
+$tabs.Multiline = $true
 
 $checkboxes = @{}
 $optMeta = @{}
@@ -1991,12 +1992,14 @@ $btnExit.Add_Click({ Stop-ProcessBoost; $form.Close() })
 $flowLeft = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowLeft.Dock = "Left"
 $flowLeft.AutoSize = $true
+$flowLeft.WrapContents = $false
 $flowLeft.FlowDirection = "LeftToRight"
 $flowLeft.Controls.AddRange(@($btnBackup, $btnRestore, $btnReport))
 
 $flowRight = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowRight.Dock = "Right"
 $flowRight.AutoSize = $true
+$flowRight.WrapContents = $false
 $flowRight.FlowDirection = "RightToLeft"
 $flowRight.Controls.AddRange(@($btnExit, $btnApply))
 
