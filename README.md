@@ -44,6 +44,7 @@ powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 | Ultimate Performance план питания | Ultimate Performance power plan | Включает скрытый план питания Windows: меньше энергосберегающих переходов CPU. На AMD X3D заменяется на «Сбалансированная» (см. ниже) |
 | Отключить USB selective suspend | Disable USB selective suspend | USB-устройства (мышь/геймпад) не "засыпают", снижает случайные микро-лаги |
 | Отключить core parking | Disable core parking | Все логические ядра CPU остаются активными, снижает задержку пробуждения ядра при нагрузке |
+| Отключить Power Throttling (выкл. по умолчанию) | Disable Power Throttling (off by default) | Windows не ограничивает фоновые процессы по энергопотреблению; на ноутбуке от батареи увеличит расход |
 
 > **Процессоры AMD X3D / X3D CPUs:** скрипт определяет X3D автоматически. Вместо Ultimate Performance включается «Сбалансированная» (драйвер 3D V-Cache сам выбирает CCD для игры), а отключение core parking пропускается.
 > The script auto-detects X3D CPUs: Balanced plan is used instead of Ultimate Performance and core-parking tweak is skipped.
@@ -55,7 +56,7 @@ powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 | RU | EN | Эффект |
 |---|---|---|
 | Hardware-Accelerated GPU Scheduling (HAGS) (включается; в спорных случаях сравните сами) | same | Планирование GPU на уровне драйвера вместо CPU-диспетчера, снижает задержку рендера на поддерживаемых GPU |
-| Отключить Game DVR / Xbox Game Bar overlay | Disable Game DVR / Xbox Game Bar overlay | Убирает фоновую запись/оверлей, разгружает GPU/CPU во время игры |
+| Отключить Game DVR / Xbox Game Bar overlay | Disable Game DVR / Xbox Game Bar overlay | Убирает фоновую запись/оверлей и глобально предпочитает полноэкранный эксклюзивный режим (FSE вместо FSO) |
 | Приоритет GPU/CPU для игр (MMCSS "Games") (выкл. по умолчанию) | Game-priority MMCSS profile (off by default) | MMCSS в основном влияет на аудиопотоки; для игр эффект спорный — включайте и сравнивайте |
 | Визуальные эффекты "Лучшее быстродействие" (выкл. по умолчанию) | "Best performance" visual effects (off by default) | Отключает анимации Windows, немного освобождает CPU/GPU |
 
@@ -64,6 +65,7 @@ powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 |---|---|---|
 | Отключить Network Throttling Index | Disable Network Throttling Index | Снимает искусственное ограничение пропускной способности мультимедиа-трафика в MMCSS |
 | Отключить алгоритм Нагла (TCPNoDelay) (выкл. по умолчанию) | Disable Nagle's algorithm (TCPNoDelay) (off by default) | Влияет только на TCP; большинство шутеров работает по UDP, поэтому польза мала |
+| Отключить EEE / Green Ethernet в драйвере NIC (выкл. по умолчанию) | Disable EEE / Green Ethernet in the NIC driver (off by default) | Убирает энергосбережение Ethernet (микро-задержки). Исходные значения сохраняются в `%APPDATA%\WinGameOptimizer\nic_original.json`, кнопка «Сброс» их возвращает |
 | Flush DNS + сброс Winsock (выкл. по умолчанию) | Flush DNS + reset Winsock (off by default) | Устраняет повреждённые сетевые настройки/DNS-кэш, может помочь при высоком пинге |
 
 ### 4. Вкладка «Система» / System tab
@@ -75,6 +77,8 @@ powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 | Отключить энергосбережение сетевой карты | Disable NIC power saving | NIC не уходит в режим энергосбережения, снижает сетевые микро-лаги/джиттер |
 | Отключить гибернацию (выкл. по умолчанию) | Disable hibernation (off by default) | Освобождает место на диске (убирает hiberfil.sys) |
 | Очистить temp/кэш/корзину | Clean temp/cache/recycle bin | Освобождает место, убирает мусорные файлы, которые может сканировать антивирус/индексатор (Prefetch не трогается) |
+| Отключить энергосбережение всех устройств (выкл. по умолчанию) | Disable power saving for all devices (off by default) | Снимает «Разрешить отключение устройства для экономии энергии» (WMI `MSPower_DeviceEnable`) |
+| Не ставить драйверы через Центр обновления Windows (выкл. по умолчанию) | Exclude drivers from Windows Update (off by default) | Windows не перезапишет драйвер видеокарты; обновлять драйверы нужно вручную |
 | Win32PrioritySeparation = 18 (выкл. по умолчанию) | same (off by default) | Фиксированный длинный квант планировщика: фоновый поток реже вытесняет игровой. Эффект зависит от системы — тестируйте |
 
 ### 5. Вкладка «Мышь / Инпут-лаг» / Mouse & Input-lag tab
@@ -82,6 +86,8 @@ powershell -ExecutionPolicy Bypass -File WinGameOptimizer.ps1
 |---|---|---|
 | Отключить акселерацию мыши (Enhance Pointer Precision) | Disable mouse acceleration (Enhance Pointer Precision) | Линейное, предсказуемое перемещение курсора — критично для шутеров |
 | Уменьшить буфер очереди мыши/клавиатуры | Reduce mouse/keyboard input queue size | Меньше буферизация ввода драйвером (`mouclass`/`kbdclass`) — ниже задержка отклика |
+| Ограничить опрос мыши фоновыми приложениями до 50 Гц | Throttle background mouse polling to 50 Hz | Windows 11 23H2+: `RawMouseThrottleDuration` = 20 мс, меньше нагрузка от фоновых приложений |
+| Отключить всплывающие окна залипания клавиш | Disable Sticky/Toggle/Filter Keys popups | Shift ×5 не сворачивает игру |
 | Отключить энергосбережение HID-устройств | Disable HID device power saving | Мышь/клавиатура не "просыпаются" с задержкой после простоя |
 | **[Продвинуто]** Привязка IRQ мыши/клавиатуры к выбранному ядру CPU | **[Advanced]** Pin mouse/keyboard IRQ to a chosen CPU core | Прерывания устройства обрабатываются выделенным ядром, не конкурируя с ядром, занятым игрой/рендером — снижает input-джиттер |
 | **[Эксперимент]** Принудительный MSI-режим прерываний для HID | **[Experimental]** Force MSI interrupt mode for HID devices | MSI эффективнее классических line-based прерываний; риск — код 10 в Диспетчере устройств, если драйвер не поддерживает |
@@ -134,7 +140,8 @@ Your own process list with a priority: process name (without `.exe`, can be pick
 - не меняет TCP autotuning и не применяет «TCP Optimizer»-твики (игры работают по UDP);
 - не чистит standby-список и не ставит «очистители памяти» (рост hard page faults и статтеров);
 - не раскидывает процессы по ядрам и не меняет Ideal Processor потоков (только affinity прерываний устройств ввода, по желанию);
-- не отключает устройства в диспетчере без разбора.
+- не отключает устройства в диспетчере без разбора;
+- не берёт из сторонних паков: отключение UAC, полное отключение Windows Update с удалением `SoftwareDistribution`, твики Memory Management (EnableCfg, SEHOP и т.п.), `bcdedit` таймеры, скрытые ключи драйверов NVIDIA/AMD (P-state, ULPS), TCP/ECN-твики, а также активаторы Windows — проект не помогает обходить лицензирование.
 
 Спорные темы (тестируйте на своей системе): HAGS (по умолчанию включается), Игровой режим Windows (не трогается), режим питания (на AMD/X3D — «Сбалансированная»), `Win32PrioritySeparation`.
 

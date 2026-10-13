@@ -232,6 +232,7 @@ function Opt-DisableUsbSuspend {
     Write-Log "Отключение USB selective suspend..."
     powercfg /setacvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0
     powercfg /setactive scheme_current
+    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Services\USB" -Name "DisableSelectiveSuspend" -Value 1
 }
 
 function Opt-DisableCoreParking {
@@ -258,6 +259,13 @@ function Opt-DisableGameDVR {
     Write-Log "Отключение Game DVR / Xbox Game Bar overlay..."
     Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 0
     Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehaviorMode" -Value 2
+    # Глобально предпочитать полноэкранный эксклюзивный режим (FSE) вместо FSO
+    Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_FSEBehavior" -Value 2
+    Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_HonorUserFSEBehaviorMode" -Value 1
+    Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_DXGIHonorFSEWindowsCompatible" -Value 1
+    Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_EFSEFeatureFlags" -Value 0
+    Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_DSEBehavior" -Value 2
+    Set-RegistryValue -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" -Name "AppCaptureEnabled" -Value 0
     Set-RegistryValue -Path "HKCU:\Software\Microsoft\GameBar" -Name "AllowAutoGameMode" -Value 1
     Set-RegistryValue -Path "HKCU:\Software\Microsoft\GameBar" -Name "AutoGameModeEnabled" -Value 1
     Set-RegistryValue -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" -Name "AllowGameDVR" -Value 0
@@ -516,6 +524,84 @@ function Opt-ReduceInputBuffering {
     Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Services\mouclass\Parameters" -Name "MouseDataQueueSize" -Value 20
     Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters" -Name "KeyboardDataQueueSize" -Value 20
     Write-Log "Требуется перезагрузка для применения."
+}
+
+function Opt-MouseThrottle {
+    Write-Log "Ограничение частоты опроса мыши для фоновых приложений до 50 Гц (Windows 11 23H2+)..."
+    Set-RegistryValue -Path "HKCU:\Control Panel\Mouse" -Name "RawMouseThrottleDuration" -Value 20
+    Write-Log "Применится после перелогина/перезагрузки. На Windows 10 параметр игнорируется." "WARN"
+}
+
+function Opt-DisablePowerThrottling {
+    Write-Log "Отключение Power Throttling (ограничение фоновых процессов по энергопотреблению)..."
+    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" -Name "PowerThrottlingOff" -Value 1
+}
+
+function Opt-DisableDriverUpdates {
+    Write-Log "Запрет автоматической установки драйверов через Центр обновления Windows..."
+    Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching" -Name "SearchOrderConfig" -Value 0
+    Set-RegistryValue -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Name "ExcludeWUDriversInQualityUpdate" -Value 1
+    Write-Log "Драйверы (в т.ч. видеокарты) теперь нужно обновлять вручную." "WARN"
+}
+
+function Opt-DisableAllDevicePowerSaving {
+    Write-Log "Отключение энергосбережения для всех устройств (аналог галки «Разрешить отключение устройства»)..."
+    try {
+        $n = 0
+        Get-CimInstance -Namespace root\wmi -ClassName MSPower_DeviceEnable -ErrorAction Stop | Where-Object { $_.Enable } | ForEach-Object {
+            $_.Enable = $false
+            Set-CimInstance -InputObject $_ -ErrorAction SilentlyContinue
+            $n++
+        }
+        Write-Log "Энергосбережение отключено у устройств: $n."
+    } catch {
+        Write-Log "MSPower_DeviceEnable недоступен: $($_.Exception.Message)" "WARN"
+    }
+}
+
+$NicClassPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}"
+$NicOriginalFile = Join-Path $env:APPDATA "WinGameOptimizer\nic_original.json"
+$NicAdvancedProps = @("SipsEnabled","*SipsEnabled","EEE","*EEE","ReduceSpeedOnPowerDown","*ReduceSpeedOnPowerDown","ULPMode","*ULPMode",
+    "EEELinkAdvertisement","*EEELinkAdvertisement","EnableGreenEthernet","*EnableGreenEthernet","AdvancedEEE","*AdvancedEEE",
+    "GigaLite","*GigaLite","PowerSavingMode","*PowerSavingMode","ASPM","*ASPM","SelectiveSuspend","*SelectiveSuspend")
+
+function Opt-NicAdvancedPowerSaving {
+    Write-Log "Отключение EEE / Green Ethernet / энергосбережения драйвера сетевой карты..."
+    $saved = @()
+    if (Test-Path $NicOriginalFile) {
+        try { $saved = @(Get-Content $NicOriginalFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $saved = @() }
+    }
+    $changed = 0
+    Get-ChildItem $NicClassPath -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' } | ForEach-Object {
+        $key = $_
+        foreach ($name in $NicAdvancedProps) {
+            try {
+                $cur = (Get-ItemProperty -Path $key.PSPath -Name $name -ErrorAction Stop).$name
+                if ([string]$cur -eq "0") { continue }
+                $kind = $key.GetValueKind($name).ToString()
+                if (-not ($saved | Where-Object { $_.Path -eq $key.PSPath -and $_.Name -eq $name })) {
+                    $saved += [PSCustomObject]@{ Path = $key.PSPath; Name = $name; Value = [string]$cur; Kind = $kind }
+                }
+                if ($kind -eq "String") { Set-ItemProperty -Path $key.PSPath -Name $name -Value "0" -Type String }
+                else { Set-ItemProperty -Path $key.PSPath -Name $name -Value 0 -Type DWord }
+                $changed++
+                Write-Log "NIC: $($key.PSChildName)\$name : $cur -> 0"
+            } catch { }
+        }
+    }
+    try {
+        $dir = Split-Path $NicOriginalFile
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        ConvertTo-Json -InputObject @($saved) -Depth 3 | Set-Content -Path $NicOriginalFile -Encoding UTF8
+    } catch { Write-Log "Не удалось сохранить исходные значения NIC: $($_.Exception.Message)" "WARN" }
+    Write-Log "Изменено параметров сетевых адаптеров: $changed. Исходные значения сохранены для сброса. Перезапустите адаптер или ПК." "WARN"
+}
+
+function Opt-DisableStickyKeysPopups {
+    Write-Log "Отключение всплывающих окон залипания клавиш (Shift x5 и т.п.)..."
+    Set-RegistryValue -Path "HKCU:\Control Panel\Accessibility\StickyKeys" -Name "Flags" -Value "506" -Type String
+    Set-RegistryValue -Path "HKCU:\Control Panel\Accessibility\ToggleKeys" -Name "Flags" -Value "58" -Type String
+    Set-RegistryValue -Path "HKCU:\Control Panel\Accessibility\Keyboard Response" -Name "Flags" -Value "122" -Type String
 }
 
 function Opt-DisableHidPowerSaving {
@@ -931,6 +1017,25 @@ function Test-OptionApplied {
                 }
                 return $true
             }
+            "MouseThrottle"   { return ((Get-RegVal "HKCU:\Control Panel\Mouse" "RawMouseThrottleDuration") -eq 20) }
+            "PowerThrottling" { return ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" "PowerThrottlingOff") -eq 1) }
+            "DriverUpdates"   {
+                return (((Get-RegVal "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching" "SearchOrderConfig") -eq 0) -and
+                        ((Get-RegVal "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" "ExcludeWUDriversInQualityUpdate") -eq 1))
+            }
+            "DevPower"        {
+                $inst = @(Get-CimInstance -Namespace root\wmi -ClassName MSPower_DeviceEnable -ErrorAction Stop)
+                if ($inst.Count -eq 0) { return $false }
+                return (@($inst | Where-Object { $_.Enable }).Count -eq 0)
+            }
+            "NicAdvanced"     {
+                if (-not (Test-Path $NicOriginalFile)) { return $false }
+                $entries = @(Get-Content $NicOriginalFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+                if ($entries.Count -eq 0) { return $false }
+                foreach ($e in $entries) { if ([string](Get-RegVal $e.Path $e.Name) -ne "0") { return $false } }
+                return $true
+            }
+            "StickyKeys"      { return ((Get-RegVal "HKCU:\Control Panel\Accessibility\StickyKeys" "Flags") -eq "506") }
             "Defender"    {
                 return (((Get-RegVal "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender" "DisableAntiSpyware") -eq 1) -or
                         ((Get-RegVal "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" "DisableRealtimeMonitoring") -eq 1))
@@ -973,7 +1078,7 @@ $ServiceDefaults = @{
 
 # Ключи, для которых есть кнопка сброса (ClearTemp и DnsWinsock — разовые действия, сбрасывать нечего)
 $ResetSupportedKeys = @("UltimatePower","UsbSuspend","CoreParking","HAGS","GameDVR","MMCSS","VisualFx","NetThrottle","Nagle",
-    "BgServices","BgTasks","BgApps","NicPower","Hibernation","PrioSep","MouseAccel","InputQueue","HidPower","IrqAffinity",
+    "BgServices","BgTasks","BgApps","NicPower","Hibernation","PrioSep","MouseThrottle","PowerThrottling","DriverUpdates","DevPower","NicAdvanced","StickyKeys","MouseAccel","InputQueue","HidPower","IrqAffinity",
     "MsiMode","Defender","Mitigations")
 
 function Reset-Option {
@@ -983,6 +1088,7 @@ function Reset-Option {
             Write-Log "Сброс схем питания к заводским (powercfg /restoredefaultschemes)..."
             powercfg /restoredefaultschemes | Out-Null
             powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e | Out-Null
+            Remove-RegValueSafe "HKLM:\SYSTEM\CurrentControlSet\Services\USB" @("DisableSelectiveSuspend")
             Write-Log "Схемы питания сброшены, активна «Сбалансированная». Копии Ultimate Performance удалены."
         }
         "HAGS" {
@@ -991,7 +1097,8 @@ function Reset-Option {
         }
         "GameDVR" {
             Set-RegistryValue -Path "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -Value 1
-            Remove-RegValueSafe "HKCU:\System\GameConfigStore" @("GameDVR_FSEBehaviorMode")
+            Remove-RegValueSafe "HKCU:\System\GameConfigStore" @("GameDVR_FSEBehaviorMode","GameDVR_FSEBehavior","GameDVR_HonorUserFSEBehaviorMode","GameDVR_DXGIHonorFSEWindowsCompatible","GameDVR_EFSEFeatureFlags","GameDVR_DSEBehavior")
+            Set-RegistryValue -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" -Name "AppCaptureEnabled" -Value 1
             Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" @("AllowGameDVR")
         }
         "MMCSS" {
@@ -1074,6 +1181,38 @@ function Reset-Option {
                 Remove-RegValueSafe $msiPath @("MSISupported")
             }
             Write-Log "Нужна перезагрузка. Если устройство работает некорректно — используйте «Восстановить настройки устройств ввода»." "WARN"
+        }
+        "MouseThrottle" { Remove-RegValueSafe "HKCU:\Control Panel\Mouse" @("RawMouseThrottleDuration") }
+        "PowerThrottling" { Remove-RegValueSafe "HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" @("PowerThrottlingOff") }
+        "DriverUpdates" {
+            Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching" -Name "SearchOrderConfig" -Value 1
+            Remove-RegValueSafe "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" @("ExcludeWUDriversInQualityUpdate")
+        }
+        "DevPower" {
+            try {
+                Get-CimInstance -Namespace root\wmi -ClassName MSPower_DeviceEnable -ErrorAction Stop | Where-Object { -not $_.Enable } | ForEach-Object {
+                    $_.Enable = $true
+                    Set-CimInstance -InputObject $_ -ErrorAction SilentlyContinue
+                }
+                Write-Log "Энергосбережение устройств включено обратно."
+            } catch { Write-Log "MSPower_DeviceEnable недоступен: $($_.Exception.Message)" "WARN" }
+        }
+        "NicAdvanced" {
+            if (-not (Test-Path $NicOriginalFile)) { Write-Log "Сохранённых исходных значений сетевой карты нет — сбрасывать нечего." "WARN"; break }
+            foreach ($e in @(Get-Content $NicOriginalFile -Raw -Encoding UTF8 | ConvertFrom-Json)) {
+                try {
+                    if ($e.Kind -eq "String") { Set-ItemProperty -Path $e.Path -Name $e.Name -Value ([string]$e.Value) -Type String }
+                    else { Set-ItemProperty -Path $e.Path -Name $e.Name -Value ([int]$e.Value) -Type DWord }
+                    Write-Log "NIC: $($e.Name) -> $($e.Value)"
+                } catch { Write-Log "Не удалось восстановить $($e.Name): $($_.Exception.Message)" "WARN" }
+            }
+            Remove-Item $NicOriginalFile -Force -ErrorAction SilentlyContinue
+            Write-Log "Перезапустите сетевой адаптер или ПК." "WARN"
+        }
+        "StickyKeys" {
+            Set-RegistryValue -Path "HKCU:\Control Panel\Accessibility\StickyKeys" -Name "Flags" -Value "510" -Type String
+            Set-RegistryValue -Path "HKCU:\Control Panel\Accessibility\ToggleKeys" -Name "Flags" -Value "62" -Type String
+            Set-RegistryValue -Path "HKCU:\Control Panel\Accessibility\Keyboard Response" -Name "Flags" -Value "126" -Type String
         }
         "Defender"    { Restore-Defender }
         "Mitigations" {
@@ -1292,6 +1431,7 @@ if (Test-IsX3D) {
 Add-OptCheckbox $pgPower "UltimatePower" "План питания Ultimate Performance" "Меньше энергосберегающих переходов CPU. На AMD X3D автоматически заменяется на «Сбалансированная»."
 Add-OptCheckbox $pgPower "UsbSuspend"    "Отключить USB selective suspend" "USB-устройства (мышь, геймпад) не «засыпают» — меньше случайных микро-лагов."
 Add-OptCheckbox $pgPower "CoreParking"   "Отключить core parking" "Все ядра CPU всегда активны. Пропускается на X3D."
+Add-OptCheckbox $pgPower "PowerThrottling" "Отключить Power Throttling" "Windows не ограничивает фоновые процессы по энергопотреблению. На ноутбуке от батареи увеличит расход." $false
 
 # --- GPU / Дисплей ---
 $pgGpu = New-OptTab "GPU / Дисплей"
@@ -1304,6 +1444,7 @@ Add-OptCheckbox $pgGpu "VisualFx" "Визуальные эффекты: «Луч
 $pgNet = New-OptTab "Сеть"
 Add-OptCheckbox $pgNet "NetThrottle" "Отключить Network Throttling Index" "Снимает ограничение мультимедиа-трафика в MMCSS."
 Add-OptCheckbox $pgNet "Nagle"       "Отключить алгоритм Нагла (TCPNoDelay)" "Влияет только на TCP; большинство шутеров работает по UDP, польза мала." $false
+Add-OptCheckbox $pgNet "NicAdvanced" "Отключить EEE / Green Ethernet в драйвере сетевой карты" "Энергосбережение Ethernet может давать микро-задержки. Исходные значения сохраняются, сброс вернёт их. Нужен перезапуск адаптера." $false
 Add-OptCheckbox $pgNet "DnsWinsock"  "Flush DNS + сброс Winsock" "Может сбросить сетевые настройки (VPN, прокси). Нужна перезагрузка." $false
 
 # --- Система ---
@@ -1314,12 +1455,14 @@ Add-OptCheckbox $pgSys "BgApps"      "Отключить фоновые UWP-пр
 Add-OptCheckbox $pgSys "NicPower"    "Отключить энергосбережение сетевой карты" "Меньше сетевых микро-лагов и джиттера."
 Add-OptCheckbox $pgSys "Hibernation" "Отключить гибернацию" "Освобождает место на диске (hiberfil.sys). Включить обратно: powercfg /hibernate on." $false
 Add-OptCheckbox $pgSys "ClearTemp"   "Очистить temp / кэш / корзину" "Выполняется перед применением остальных опций. Prefetch не трогается."
+Add-OptCheckbox $pgSys "DevPower"      "Отключить энергосбережение всех устройств" "Убирает галку «Разрешить отключение этого устройства для экономии энергии» у устройств в Диспетчере. Может увеличить расход на ноутбуке." $false
+Add-OptCheckbox $pgSys "DriverUpdates" "Не ставить драйверы через Центр обновления Windows" "Windows не будет перезаписывать драйвер видеокарты. Драйверы придётся обновлять вручную." $false
 Add-OptCheckbox $pgSys "PrioSep"     "Win32PrioritySeparation = 18" "Фиксированный длинный квант планировщика. Эффект зависит от системы — тестируйте." $false
 
 # --- Advanced (риск) ---
 $pgAdv = New-OptTab "Advanced (риск)"
 Add-OptNote $pgAdv "Эти настройки снижают уровень защиты системы. Применяйте осознанно." $ColorRisk $true
-Add-OptCheckbox $pgAdv "Mitigations" "Отключить Spectre/Meltdown mitigations" "Прирост в CPU-bound сценариях, но снижается защита процессора от атак по сторонним каналам. Нужна перезагрузка." $false $true
+Add-OptCheckbox $pgAdv "Mitigations" "Отключить Spectre/Meltdown mitigations" "Прирост в CPU-bound сценариях, но снижается защита процессора от атак по сторонним каналам. Нужна перезагрузка. Античиты (FACEIT, Vanguard) могут отказать в запуске: для FACEIT верните DEP командой bcdedit /set {current} nx AlwaysOn." $false $true
 Add-OptCheckbox $pgAdv "Defender"    "Отключить Microsoft Defender (защита в реальном времени)" "ПК останется без антивируса. Подробности рисков — ниже." $false $true
 Add-OptNote $pgAdv ("Риски отключения Defender:`r`n" +
  "• ПК остаётся без антивируса: вирусы, майнеры, стилеры, шифровальщики не блокируются;`r`n" +
@@ -1389,6 +1532,8 @@ $lt2.Buttons.Controls.Add($btnRemoveBloat)
 $pgInput = New-OptTab "Мышь / Инпут-лаг"
 Add-OptCheckbox $pgInput "MouseAccel" "Отключить акселерацию мыши" "Enhance Pointer Precision: линейное, предсказуемое движение курсора."
 Add-OptCheckbox $pgInput "InputQueue" "Уменьшить буфер очереди мыши/клавиатуры" "Меньше буферизация ввода драйверами mouclass/kbdclass. Нужна перезагрузка."
+Add-OptCheckbox $pgInput "MouseThrottle" "Ограничить опрос мыши фоновыми приложениями до 50 Гц" "Windows 11 23H2+: фоновые приложения (Discord и т.п.) получают данные мыши реже, меньше нагрузка на CPU. На Windows 10 не действует."
+Add-OptCheckbox $pgInput "StickyKeys" "Отключить всплывающие окна залипания клавиш" "Shift ×5, удержание Shift и т.п. больше не сворачивают игру."
 Add-OptCheckbox $pgInput "HidPower"   "Отключить энергосбережение HID-устройств" "Мышь и клавиатура не «просыпаются» с задержкой."
 Add-OptNote $pgInput "ПРОДВИНУТО" $ColorRisk $true
 Add-OptCheckbox $pgInput "IrqAffinity" "Привязать прерывания мыши/клавиатуры к ядру CPU" "Выберите ядро ниже. Не CPU 0 (занят системными прерываниями); берите физическое ядро вне основных потоков игры." $false $true
@@ -1700,6 +1845,12 @@ $btnApply.Add_Click({
     if ($checkboxes["NicPower"].Checked)      { Opt-DisableNicPowerSaving }
     if ($checkboxes["Hibernation"].Checked)   { Opt-DisableHibernation }
     if ($checkboxes["PrioSep"].Checked)       { Opt-PrioritySeparation }
+    if ($checkboxes["PowerThrottling"].Checked) { Opt-DisablePowerThrottling }
+    if ($checkboxes["DriverUpdates"].Checked) { Opt-DisableDriverUpdates }
+    if ($checkboxes["DevPower"].Checked)      { Opt-DisableAllDevicePowerSaving }
+    if ($checkboxes["NicAdvanced"].Checked)   { Opt-NicAdvancedPowerSaving }
+    if ($checkboxes["MouseThrottle"].Checked) { Opt-MouseThrottle }
+    if ($checkboxes["StickyKeys"].Checked)    { Opt-DisableStickyKeysPopups }
     if ($checkboxes["MouseAccel"].Checked)    { Opt-DisableMouseAcceleration }
     if ($checkboxes["InputQueue"].Checked)    { Opt-ReduceInputBuffering }
     if ($checkboxes["HidPower"].Checked)      { Opt-DisableHidPowerSaving }
